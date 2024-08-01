@@ -1,3 +1,4 @@
+{-# LANGUAGE QuasiQuotes #-}
 module JsonLogic
   ( jsonLogic
   , Value(..)
@@ -12,11 +13,20 @@ import Prelude
 import qualified Data.Tuple.Extra as DTE
 import qualified Data.Aeson.KeyMap as AKM
 import Data.Scientific (toBoundedInteger, toRealFloat)
+import qualified Data.Aeson.QQ.Simple as AQ
 import qualified Data.Aeson.Key as AK
 import qualified Data.Vector as V
 import Text.Read (readMaybe)
 import Data.Maybe (fromMaybe)
 import Debug.Trace (traceShowId)
+
+-- an example of filter function
+_test :: IO ()
+_test = do
+  let tests = [AQ.aesonQQ|{"filter":[{"var":"nestedIntegers"},{ "!" : {"in":[{"var":"a"},[null, 1, 3]]}}]}|]
+  let data_ = [AQ.aesonQQ|{ "nestedIntegers": [{"b": 1}, { "a": 2}, {"a" :3}, {"a": 4}, { "a": 1}]}|]
+  print tests
+  print $ jsonLogic tests data_
 
 jsonLogic :: Value -> Value -> Value
 jsonLogic tests data_ =
@@ -24,13 +34,17 @@ jsonLogic tests data_ =
     A.Object dict ->
       let operator = fst (head (AKM.toList dict))
           values = snd (head (AKM.toList dict))
-      in applyOperation operator (jsonLogicValues values data_) data_
+      in applyOperation' operator values
     A.Array rules -> A.Array $ V.map (flip jsonLogic data_) rules
     _ -> tests
+  where 
+    applyOperation' "filter" (A.Array values) = applyOperation "filter" (V.toList values) data_
+    applyOperation' operator values = applyOperation operator (jsonLogicValues values data_) data_
 
 applyOperation :: Key -> [Value] -> Value -> Value
 applyOperation "var" [A.Number ind] (A.Array arr) = arr V.! (fromMaybe 0 $ toBoundedInteger ind :: Int)
 applyOperation "var" [A.String ind] (A.Array arr) = arr V.! (fromMaybe 0 $ readMaybe (DT.unpack ind) :: Int) -- TODO: make it like getVar to add support for nested arrays being access using 1.1.2
+applyOperation "var" [A.String ""] data_ = getVar data_ "" data_
 applyOperation "var" [A.String var] data_ = getVar data_ var A.Null
 applyOperation "var" [A.String var, value] data_ = getVar data_ var value
 applyOperation "var" [A.Null] A.Null = A.Number 1
@@ -38,6 +52,14 @@ applyOperation "var" [] A.Null = A.Number 1
 applyOperation "var" [A.Null] data_ = data_
 applyOperation "var" [] data_ = data_
 applyOperation "var" _ _ = error "Wrong number of arguments for var"
+applyOperation "filter" [A.Object var, operation] data_ = do
+  case AKM.lookup (AK.fromString "var") var of 
+    Just (A.String varFromData) -> 
+      case getVar data_ varFromData A.Null of
+        A.Array listToFilter -> A.Array $ V.filter (not . toBool . jsonLogic operation . traceShowId) listToFilter
+        _ -> error "wrong type of variable passed for filtering"
+    _ -> error "var must be specified here"
+
 -- applyOperation "missing" (A.Array args) data_ = List $ missing data_ args TODO: add these if required later
 -- applyOperation "missing_some" [Num minReq, List args] data_ = List $ missingSome data_ (round minReq) args
 applyOperation op args _ = fromMaybe Null $ Map.lookup op operations <*> pure args
@@ -86,7 +108,7 @@ modOperator a b =
       case (aaB, bbB) of 
         (Just aaB', Just bbB') -> mod aaB' bbB'
         _ -> error "Couldn't parse numbers" 
-    _ -> error "Invalid input type for mod operator"
+    _ -> error $ "Invalid input type for mod operator a: " <> show a <> ", b: " <> show b
 
 ifOp :: [Value] -> Value
 ifOp [a, b, c] = if not (toBool a) then b else c
