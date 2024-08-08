@@ -1,8 +1,6 @@
 {-# LANGUAGE QuasiQuotes #-}
-
 module JsonLogic
-  ( jsonLogic,
-    Value (..),
+  ( jsonLogic
   )
 where
 
@@ -23,12 +21,19 @@ import Text.Read (readMaybe)
 import Prelude
 
 -- an example of filter function
-poolingTest :: IO ()
-poolingTest = do
+_poolingTest :: IO ()
+_poolingTest = do
   let tests = [AQ.aesonQQ|{ "filter": [ { "var": "drivers" } , { "!": [ { "and": [ { "!=": [ { "var": "customerInfo.gender" }, "MALE" ] }, { "in": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, [ "Unsafe" ] ] } ] } ] } ] }|]
   let data_ = [AQ.aesonQQ|{ "drivers": [{"customerInfo": {"gender": "MALE"}, "driverPoolResult": {"driverTags": {"SafetyCohort": "Unsafe"}}}]}|]
   -- print tests
   print $ jsonLogic tests data_
+
+_test :: IO ()
+_test = do
+  -- let tests = [AQ.aesonQQ|{ "map":["nestedIntegers",{ "cat": [{ "var": ""}, { "if": [ { "==": [{"var": "a.b"}, 1] }, { "a": { "score": 10 } }, { "a" : { "score": 20 } } ]}]}] }|]
+  let tests = [AQ.aesonQQ|{ "map":["nestedIntegers",{ "cat": [ {"var": ""}, {"score": { "+": [ {"var": "a.b"}, { "var" : "a.c"}]}}] }] }|]
+  let data_ = [AQ.aesonQQ|{ "nestedIntegers": [{"a": { "b": 1.1, "c": 1 } }, { "a": { "b": 10, "c": 10 }}] }|]
+  print . A.encode $  jsonLogic tests data_
 
 jsonLogic :: Value -> Value -> Value
 jsonLogic tests data_ =
@@ -40,8 +45,15 @@ jsonLogic tests data_ =
     A.Array rules -> A.Array $ V.map (flip jsonLogic data_) rules
     _ -> tests
   where
+    isLogicOperation op = op `elem` Map.keys operations
     applyOperation' "filter" (A.Array values) = applyOperation "filter" (V.toList values) data_
-    applyOperation' operator values = applyOperation operator (jsonLogicValues values data_) data_
+    applyOperation' "sort" (A.Array values) = applyOperation "sort" (V.toList values) data_
+    applyOperation' "map" (A.Array values) = applyOperation "map" (V.toList values) data_
+    applyOperation' "var" values = applyOperation "var" (jsonLogicValues values data_) data_
+    applyOperation' operator values = do 
+      if isLogicOperation operator
+         then applyOperation operator (jsonLogicValues values data_) data_
+         else A.object [ operator .= jsonLogic values data_]
 
 applyOperation :: Key -> [Value] -> Value -> Value
 applyOperation "var" [A.Number ind] (A.Array arr) = arr V.! (fromMaybe 0 $ toBoundedInteger ind :: Int)
@@ -54,17 +66,76 @@ applyOperation "var" [] A.Null = A.Number 1
 applyOperation "var" [A.Null] data_ = data_
 applyOperation "var" [] data_ = data_
 applyOperation "var" _ _ = error "Wrong number of arguments for var"
+applyOperation "sort" values data_ = sortValues values data_
+applyOperation "map" values data_ = mapIt values data_
 applyOperation "filter" [A.Object var, operation] data_ = do
   case AKM.lookup (AK.fromString "var") var of
     Just (A.String varFromData) ->
       case getVar data_ varFromData A.Null of
-        A.Array listToFilter -> A.Array $ V.filter (not . toBool . jsonLogic operation . traceShowId) listToFilter
+        A.Array listToFilter -> do
+          let updatedData = A.Array $ V.filter (not . toBool . jsonLogic operation) listToFilter
+          putVar varFromData updatedData data_ 
         _ -> error "wrong type of variable passed for filtering"
     _ -> error "var must be specified here"
-
 -- applyOperation "missing" (A.Array args) data_ = List $ missing data_ args TODO: add these if required later
 -- applyOperation "missing_some" [Num minReq, List args] data_ = List $ missingSome data_ (round minReq) args
 applyOperation op args _ = fromMaybe Null $ Map.lookup op operations <*> pure args
+
+mapIt :: [Value] -> Value -> Value
+mapIt [A.String mapOn, operation] data_ = mapIt' mapOn operation data_
+mapIt [A.Object mapOnVar, operation] data_ = 
+  case AKM.lookup (AK.fromString "var") mapOnVar of 
+    Just (A.String varFromData) -> do
+      let updatedData = mapIt' varFromData operation data_
+      putVar varFromData updatedData data_ 
+    _ -> error "var must be specified here"
+mapIt _ _ = error "var must be specified here"
+
+mapIt' :: DT.Text -> Value -> Value -> Value
+mapIt' mapOn operation data_ =
+  case getVar data_ mapOn A.Null of
+    A.Array listToFilter -> do
+      let updatedData = A.Array $ V.map (jsonLogic operation) listToFilter
+      putVar mapOn updatedData data_
+    _ -> error "wrong type of variable passed for mapping"
+
+sortValues :: [Value] -> Value -> Value
+sortValues [] _ = error "wrong usage of sort command"
+sortValues (x:restValues) data_ = go x
+  where
+    go (A.Object sortWhat) = do
+      case AKM.lookup (AK.fromString "var") sortWhat of
+        Just (A.String varFromData) ->
+          case getVar data_ varFromData A.Null of
+            A.Array listToSort -> do
+              let updatedVar = A.Array . V.fromList $ sortValues' restValues (V.toList listToSort)
+              putVar varFromData updatedVar data_
+            _ -> error "wrong type of variable passed for sorting"
+        _ -> error "wrong type of variable passed for sorting"
+    go (A.String varFromData) = do
+      case getVar data_ varFromData A.Null of
+        A.Array listToSort -> do
+          let updatedVar = A.Array . V.fromList $ sortValues' restValues (V.toList listToSort)
+          putVar varFromData updatedVar data_
+        _ -> error "Wrong type of variable passed for sorting"
+    go _ = error "cannot figureout what to sort broo"
+
+sortValues' :: [Value] -> [Value] -> [Value]
+sortValues' [] listToSort = map A.Object . DL.sort $ map getObjects listToSort
+sortValues' [A.String on] listToSort = map A.Object . sortValuesOn on $ map getObjects listToSort
+sortValues' [A.Object on] listToSort = do
+  case AKM.lookup (AK.fromString "var") on of 
+    Just (A.String on') -> map A.Object . sortValuesOn on' $ map getObjects listToSort
+    _ -> error $ "on part of sort command contains unsupported type for var field, should be string, on command: " <> show on
+sortValues' on _ = error $ "wrong type of data used to pass 'on' field for sortOn, should be String or {\"var\":\"String\"}, on command: " <> show on
+
+getObjects :: Value -> AKM.KeyMap Value
+getObjects (A.Object obj) = obj
+getObjects _ = error "needs to be object type"
+
+sortValuesOn :: DT.Text -> [AKM.KeyMap Value] -> [AKM.KeyMap Value]
+sortValuesOn on = do
+  DL.sortOn (\element -> getVar (A.Object element) on A.Null)
 
 getVar :: Value -> DT.Text -> Value -> Value
 getVar (A.Object dict) varName notFound = getVarHelper dict (DT.split (== '.') varName)
@@ -79,6 +150,18 @@ getVar (A.Object dict) varName notFound = getVarHelper dict (DT.split (== '.') v
         _ -> notFound
     getVarHelper _ _ = notFound
 getVar _ _ notFound = notFound
+
+putVar :: DT.Text -> Value -> Value -> Value
+putVar key newVal (A.Object obj) = A.Object $ putVarHelper obj (DT.split (== '.') key) newVal
+  where
+    putVarHelper :: AKM.KeyMap Value -> [DT.Text] -> Value -> AKM.KeyMap Value
+    putVarHelper d [finalKey] val = AKM.insert (AK.fromString $ DT.unpack finalKey) val d
+    putVarHelper d (key':restKey) val = 
+      case AKM.lookup (AK.fromString $ DT.unpack key') d of
+        Just (A.Object d') -> AKM.insert (AK.fromString $ DT.unpack key') (A.Object $ putVarHelper d' restKey val) d
+        _ -> error "Path does not exist for putting value"
+    putVarHelper _ _ _ = error "Invalid path for putting value"
+putVar _ _ _ = error "putVar expects an object as the target value"
 
 jsonLogicValues :: Value -> Value -> [Value]
 jsonLogicValues (Array vals) data_ = map (`jsonLogic` data_) $ V.toList vals
@@ -147,12 +230,13 @@ operateNumber :: (Double -> Double -> Double) -> Double -> Value -> Double
 operateNumber fn acc a =
   acc `fn` getNumber' a
 
-concatinateStrings :: DT.Text -> Value -> DT.Text
-concatinateStrings acc a =
-  acc <> case a of
-    A.String aa -> aa
-    A.Number _ -> DT.pack . show $ getNumber' a
-    _ -> DT.pack $ show a
+concatValue :: Value -> Value -> Value
+concatValue a b = deepMerge a b
+
+deepMerge :: Value -> Value -> Value
+deepMerge (Object a) (Object b) = Object (AKM.unionWith deepMerge a b)
+deepMerge (Array a) (Array b) = Array (a <> b)
+deepMerge _ b = b
 
 binaryOpJson :: ToJSON a => (Value -> Value -> a) -> [Value] -> Value
 binaryOpJson fn = A.toJSON . binaryOp fn
@@ -167,6 +251,14 @@ operateNumberList fn _ (acc : xs) = A.toJSON $ listOp fn (getNumber' acc) xs
 
 listOp :: (a -> Value -> a) -> a -> [Value] -> a
 listOp fn acc = DL.foldl' fn acc
+
+listOpWithOutAcc :: (Value -> Value -> Value) -> [Value] -> Value
+listOpWithOutAcc fn vals = go vals
+  where
+    go (A.Object _:_) = listOp fn (A.Object AKM.empty) vals
+    go _ = listOp fn (A.String "") vals
+
+
 
 merge :: [Value] -> Value
 merge = A.Array . V.fromList . concatMap getArr
@@ -189,40 +281,36 @@ compareWithAll _ [_x] = False
 compareWithAll ordering xs = compareAll (compareJsonImpl ordering) xs
 
 operations :: Map.Map Key ([Value] -> Value)
-operations =
-  Map.fromList $
-    -- all in below array are checker functions i.e. checks for conditions returns bool
-    map
-      (DTE.first AK.fromString . DTE.second ((.) A.toJSON))
-      [ ("==", compareJson EQ),
-        ("===", compareJson EQ), -- lets treat both same in haskell
-        ("!=", not . compareJson EQ),
-        ("!==", not . compareJson EQ),
-        (">", compareWithAll GT),
-        (">=", \a -> compareWithAll GT a || compareWithAll EQ a),
-        ("<", compareWithAll LT),
-        ("<=", \a -> compareWithAll LT a || compareWithAll EQ a),
-        ("!", unaryOp toBool),
-        -- , ("!!", Booll . all toBool) -- TODO: will implement later if required
-        ("and", all (not . toBool)),
-        ("&&", all (not . toBool)),
-        ("or", any (not . toBool)),
-        ("||", any (not . toBool)),
-        ("in", binaryOp inOp)
-      ]
-      -- all below returns Values based or does data transformation
-      <> map
-        (DTE.first AK.fromString)
-        [ ("?:", ifOp),
-          ("if", ifOp),
-          ("log", unaryOp logValue),
-          ("cat", listOpJson concatinateStrings (DT.pack "")),
-          ("+", listOpJson (operateNumber (+)) 0),
-          ("*", listOpJson (operateNumber (*)) 1),
-          ("min", operateNumberList (operateNumber min) id),
-          ("max", operateNumberList (operateNumber max) id),
-          ("merge", merge),
-          ("-", operateNumberList (operateNumber (-)) ((-1) *)),
-          ("/", binaryOpJson (\a b -> getNumber' a / getNumber' b)),
-          ("%", binaryOpJson modOperator)
-        ]
+operations = Map.fromList $ 
+  -- all in below array are checker functions i.e. checks for conditions returns bool
+  map (DTE.first AK.fromString . DTE.second ((.) A.toJSON))
+    [ ("==", compareJson EQ)
+    , ("===", compareJson EQ) -- lets treat both same in haskell
+    , ("!=", not . compareJson EQ)
+    , ("!==", not . compareJson EQ)
+    , (">", compareWithAll GT)
+    , (">=", \a -> compareWithAll GT a || compareWithAll EQ a)
+    , ("<", compareWithAll LT)
+    , ("<=", \a -> compareWithAll LT a || compareWithAll EQ a)
+    , ("!", unaryOp toBool)
+    , ("and", all (not . toBool))
+    , ("&&", all (not . toBool))
+    , ("or", any (not . toBool))
+    , ("||", any (not . toBool))
+    , ("in", binaryOp inOp)
+    ]
+  -- all below returns Values based or does data transformation
+  <> map (DTE.first AK.fromString)
+    [ ("?:", ifOp)
+    , ("if", ifOp)
+    , ("log", unaryOp logValue)
+    , ("cat", listOpWithOutAcc concatValue)
+    , ("+", listOpJson (operateNumber (+)) 0)
+    , ("*", listOpJson (operateNumber (*)) 1)
+    , ("min", operateNumberList (operateNumber min) id)
+    , ("max", operateNumberList (operateNumber max) id)
+    , ("merge", merge)
+    , ("-", operateNumberList (operateNumber (-)) ((-1) *))
+    , ("/", binaryOpJson (\a b -> getNumber' a / getNumber' b))
+    , ("%", binaryOpJson modOperator) 
+    ] 
