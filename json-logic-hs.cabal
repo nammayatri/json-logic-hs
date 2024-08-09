@@ -68,6 +68,7 @@ library
       , extra
       , scientific
       , text
+      , exceptions
     exposed-modules:
       JsonLogic
 
@@ -88,6 +89,7 @@ executable json-logic-hs
       , extra
       , scientific
       , text
+      , exceptions
     hs-source-dirs:   app
     ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -fhide-source-paths -Werror
     default-extensions:
