@@ -23,16 +23,17 @@ import Prelude
 -- an example of filter function
 _poolingTest :: IO ()
 _poolingTest = do
-  let tests = [AQ.aesonQQ|{ "filter": [ { "var": "drivers" } , { "!": [ { "and": [ { "!=": [ { "var": "customerInfo.gender" }, "MALE" ] }, { "in": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, [ "Unsafe" ] ] } ] } ] } ] }|]
+  let tests = [AQ.aesonQQ|{ "map": [ { "var": "drivers" }, { "cat": [ { "var": "" }, { "if": [ { "==": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, "Safe" ] }, { "safetyScore": 0 }, { "if": [ { "==": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, "Problematic" ] }, { "safetyScore": 0.5 }, { "if": [ { "==": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, "Unsafe" ] }, { "safetyScore": 1 }, { "safetyScore": 0.25 } ]} ] } ] } ] } ] }|]
+
   let data_ = [AQ.aesonQQ|{ "drivers": [{"customerInfo": {"gender": "MALE"}, "driverPoolResult": {"driverTags": {"SafetyCohort": "Unsafe"}}}]}|]
   -- print tests
-  print $ jsonLogic tests data_
+  print . A.encode $ jsonLogic tests data_
 
 _test :: IO ()
 _test = do
   -- let tests = [AQ.aesonQQ|{ "map":["nestedIntegers",{ "cat": [{ "var": ""}, { "if": [ { "==": [{"var": "a.b"}, 1] }, { "a": { "score": 10 } }, { "a" : { "score": 20 } } ]}]}] }|]
-  let tests = [AQ.aesonQQ|{ "map":["nestedIntegers",{ "cat": [ {"var": ""}, {"score": { "+": [ {"var": "a.b"}, { "var" : "a.c"}]}}] }] }|]
-  let data_ = [AQ.aesonQQ|{ "nestedIntegers": [{"a": { "b": 1.1, "c": 1 } }, { "a": { "b": 10, "c": 10 }}] }|]
+  let tests = [AQ.aesonQQ|{ "filter": [ { "var": "drivers" }, { "!=": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, "Unsafe" ] } ] }|]
+  let data_ = [AQ.aesonQQ|{ "drivers": [{"driverPoolResult": { "driverTags": { "SafetyCohort": "Unsafe"}, "c": 1 } }, {"driverPoolResult": { "driverTags": { "SafetyCohort": "Safe"}, "c": 1 } }] }|]
   print . A.encode $  jsonLogic tests data_
 
 jsonLogic :: Value -> Value -> Value
@@ -85,9 +86,7 @@ mapIt :: [Value] -> Value -> Value
 mapIt [A.String mapOn, operation] data_ = mapIt' mapOn operation data_
 mapIt [A.Object mapOnVar, operation] data_ = 
   case AKM.lookup (AK.fromString "var") mapOnVar of 
-    Just (A.String varFromData) -> do
-      let updatedData = mapIt' varFromData operation data_
-      putVar varFromData updatedData data_ 
+    Just (A.String varFromData) -> mapIt' varFromData operation data_
     _ -> error "var must be specified here"
 mapIt _ _ = error "var must be specified here"
 
@@ -257,8 +256,6 @@ listOpWithOutAcc fn vals = go vals
   where
     go (A.Object _:_) = listOp fn (A.Object AKM.empty) vals
     go _ = listOp fn (A.String "") vals
-
-
 
 merge :: [Value] -> Value
 merge = A.Array . V.fromList . concatMap getArr
