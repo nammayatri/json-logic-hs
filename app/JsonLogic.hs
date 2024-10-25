@@ -36,9 +36,12 @@ instance Exception JsonLogicError
 
 _poolingTest :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
 _poolingTest = do
-  let tests = [AQ.aesonQQ|{ "map": [ { "var": "drivers" }, { "cat": [ { "var": "" }, { "score": { "+": [ { "*": [ { "/": [ { "var": "actualDistanceToPickup" }, 3000 ] }, 0.5 ] }, { "*": [ { "var": "safetyScore" }, 0.5 ] } ] } } ] } ] }|]
-  let data_ = [AQ.aesonQQ|{ "drivers": [{"actualDistanceToPickup": 0, "safetyScore": 0, "driverPoolResult": { "driverTags": { "SafetyCohort": "Unsafe"}, "c": 1 } }, {"actualDistanceToPickup": 10, "safetyScore": 1, "driverPoolResult": { "driverTags": { "SafetyCohort": "Safe"}, "c": 1 } }] }|]
+  let tests = [AQ.aesonQQ|{ "substr": [ {"var": "drivers"}, 5 ] }|]
+  let data_ = [AQ.aesonQQ|{ "drivers":  "POST_driverName" }|]
+  let tests2 = [AQ.aesonQQ|{ "substr": [ {"var": "drivers"}, 5 ] }|]
+  let data2_ = [AQ.aesonQQ|{ "drivers":  [1, 2, 3, 4, 5, 6, 7] }|]
   liftIO . print =<< jsonLogicEither tests data_
+  liftIO . print =<< jsonLogicEither tests2 data2_
 
 _test :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
 _test = do
@@ -310,6 +313,18 @@ compareWithAll _ [] = pure False
 compareWithAll _ [_x] = pure False
 compareWithAll ordering xs = compareAll (compareJsonImpl ordering) xs
 
+substr :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
+substr stringToCut cutFrom = do
+  fromIndex <- round <$> getNumber' cutFrom
+  elementsFromIndex fromIndex stringToCut 
+
+elementsFromIndex :: (MonadThrow m, MonadCatch m, MonadIO m) => Int -> Value -> m Value
+elementsFromIndex n (String txt) = 
+    pure . String $ DT.drop n txt
+elementsFromIndex n (Array arr) = 
+    pure . Array $ V.drop n arr
+elementsFromIndex a b = throwM $ JsonLogicError ("wrong type of variable passed for substr " <> show (A.encode a) <> " " <> show (A.encode b) :: String)
+
 operations :: (MonadThrow m, MonadCatch m, MonadIO m) => Map.Map Key ([Value] -> m Value)
 operations =
   Map.fromList $
@@ -340,6 +355,7 @@ operations =
           ("cat", listOpWithOutAcc (\a -> pure . concatValue a)),
           ("+", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
           ("*", listOpJson (operateNumber (\a -> pure . (*) a)) 1),
+          ("substr", binaryOpJson (\a b -> substr a b)),
           ("min", operateNumberList (operateNumber (\a -> pure . min a)) id),
           ("max", operateNumberList (operateNumber (\a -> pure . max a)) id),
           ("merge", pure . merge),
