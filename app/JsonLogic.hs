@@ -301,6 +301,18 @@ compareWithAll _ [] = pure False
 compareWithAll _ [_x] = pure False
 compareWithAll ordering xs = compareAll (compareJsonImpl ordering) xs
 
+substr :: (MonadThrow m, MonadCatch m) => Value -> Value -> m Value
+substr stringToCut cutFrom = do
+  fromIndex <- round <$> getNumber' cutFrom
+  elementsFromIndex fromIndex stringToCut 
+
+elementsFromIndex :: (MonadThrow m, MonadCatch m) => Int -> Value -> m Value
+elementsFromIndex n (String txt) = 
+    pure . String $ DT.drop n txt
+elementsFromIndex n (Array arr) = 
+    pure . Array $ V.drop n arr
+elementsFromIndex a b = throwM $ JsonLogicError ("wrong type of variable passed for substr " <> show (A.encode a) <> " " <> show (A.encode b) :: String)
+
 operations :: (MonadThrow m ,MonadCatch m) => Map.Map Key ([Value] -> m Value)
 operations = Map.fromList $ 
   -- all in below array are checker functions i.e. checks for conditions returns bool
@@ -330,6 +342,7 @@ operations = Map.fromList $
     , ("*", listOpJson (operateNumber (\a -> pure . (*) a)) 1)
     , ("min", operateNumberList (operateNumber (\a -> pure . min a)) id)
     , ("max", operateNumberList (operateNumber (\a -> pure . max a)) id)
+    , ("substr", binaryOpJson (\a b -> substr a b))
     , ("merge", pure . merge)
     , ("-", operateNumberList (operateNumber (\a -> pure . (-) a)) ((-1) *))
     , ("/", binaryOpJson (\a b -> liftM2 (/) (getNumber' a) (getNumber' b)))
