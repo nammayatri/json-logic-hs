@@ -46,13 +46,29 @@ _poolingTest = do
   let tests3 = [AQ.aesonQQ|{ "min": [ {"var": "drivers"} ] }|]
   let data3_ = [AQ.aesonQQ|{ "drivers":  [[[1, 2, 3, -4, 5, 6, 7] ,[1, 2, 3, 4, 5, 6, 7 ]], [1, -2, 3, 4, 5, 6, 10], [-1, 2, 3, 4, 5, 6, 11]] }|]
 
-  let tests4 = [AQ.aesonQQ|{ "map": [ {"var": "drivers"}, { "+" : [10, {"var": "A"}]} ] }|]
+  let tests4 = [AQ.aesonQQ|{ "map": [ {"var": "drivers"}, { "+" : [{"var": "A"}, 10]} ] }|]
   let data4_ = [AQ.aesonQQ|{ "drivers":  [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] }|]
+
+  let tests5 = [AQ.aesonQQ|{ "map'": [ {"var": "drivers"}, { "+" : [{"var": "A"}, 10]} ] }|]
+  let data5_ = [AQ.aesonQQ|{ "drivers":  [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] }|]
+
+  let tests6 = [AQ.aesonQQ|{ "fold": [ {"var": "drivers.a.a"}, 0, { "+" : [{"var": "A"}]} ] }|]
+  let data6_ = [AQ.aesonQQ|{ "drivers":  {"a": { "a": [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] } }}|]
+
+  let tests7 = [AQ.aesonQQ|{ "fold'": [ {"var": "drivers.a.a"}, 0, { "+" : [{"var": "A"}]} ] }|]
+  let data7_ = [AQ.aesonQQ|{ "drivers":  {"a": { "a": [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] } }}|]
+
+  let tests8 = [AQ.aesonQQ|{ "on": [ {"var": "drivers.a"}, { "fold'": [ {"var": "a"}, 0, { "+" : [{"var": "A"}]} ] }] }|]
+  let data8_ = [AQ.aesonQQ|{ "drivers":  {"a": { "a": [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] } }}|]
 
   liftIO . print =<< jsonLogicEither tests data_
   liftIO . print =<< jsonLogicEither tests2 data2_
   liftIO . print =<< jsonLogicEither tests3 data3_
-  liftIO . print =<< jsonLogicEither tests4 data4_
+  liftIO . print . A.encode =<< jsonLogic tests4 data4_
+  liftIO . print . A.encode =<< jsonLogic tests5 data5_
+  liftIO . print . A.encode =<< jsonLogic tests6 data6_
+  liftIO . print . A.encode =<< jsonLogic tests7 data7_
+  liftIO . print . A.encode =<< jsonLogic tests8 data8_
 
 _test :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
 _test = do
@@ -69,43 +85,52 @@ jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Valu
 jsonLogic tests data_ =
   case tests of
     A.Object dict ->
-      let operator = fst (head (AKM.toList dict))
+      let operator = AK.toString $ fst (head (AKM.toList dict))
           values = snd (head (AKM.toList dict))
-       in applyOperation' operator values
+          eatTheKey = DL.isSuffixOf "'" operator
+          operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
+       in applyOperation' operator' values eatTheKey
     A.Array rules -> A.Array <$> V.mapM (`jsonLogic` data_) rules
     _ -> pure tests
   where
     isLogicOperation op = op `elem` Map.keys (operations :: Map.Map Key ([Value] -> IO Value))
-    applyOperation' "filter" (A.Array values) = applyOperation "filter" (V.toList values) data_
-    applyOperation' "sort" (A.Array values) = applyOperation "sort" (V.toList values) data_
-    applyOperation' "map" (A.Array values) = applyOperation "map" (V.toList values) data_
-    applyOperation' "fold" (A.Array values) = applyOperation "fold" (V.toList values) data_
-    applyOperation' "var" values = do
+    applyOperation' "filter" (A.Array values) eatTheKey = applyOperation "filter" (V.toList values) data_ eatTheKey
+    applyOperation' "sort" (A.Array values) eatTheKey = applyOperation "sort" (V.toList values) data_ eatTheKey
+    applyOperation' "map" (A.Array values) eatTheKey = applyOperation "map" (V.toList values) data_ eatTheKey
+    applyOperation' "fold" (A.Array values) eatTheKey = applyOperation "fold" (V.toList values) data_ eatTheKey
+    applyOperation' "on" (A.Array values) _ = applyOperation "on" (V.toList values) data_ False
+    applyOperation' "var" values eatTheKey = do
       resolvedValues <- jsonLogicValues values data_
-      applyOperation "var" resolvedValues data_
-    applyOperation' operator values = do
+      applyOperation "var" resolvedValues data_ eatTheKey
+    applyOperation' operator values eatTheKey = do
       if isLogicOperation operator
         then do
           resolvedValues <- jsonLogicValues values data_
-          applyOperation operator resolvedValues data_
+          applyOperation operator resolvedValues data_ eatTheKey
         else do
           resolvedValues <- jsonLogic values data_
           pure $ A.object [operator .= resolvedValues]
 
-applyOperation :: (MonadThrow m, MonadCatch m, MonadIO m) => Key -> [Value] -> Value -> m Value
-applyOperation "var" [A.Number ind] (A.Array arr) = pure $ arr V.! (fromMaybe 0 $ toBoundedInteger ind :: Int)
-applyOperation "var" [A.String ind] (A.Array arr) = pure $ arr V.! (fromMaybe 0 $ readMaybe (DT.unpack ind) :: Int) -- TODO: make it like getVar to add support for nested arrays being access using 1.1.2
-applyOperation "var" [A.String ""] data_ = pure $ getVar data_ "" data_
-applyOperation "var" [A.String var] data_ = pure $ getVar data_ var A.Null
-applyOperation "var" [A.String var, value] data_ = pure $ getVar data_ var value
-applyOperation "var" [A.Null] A.Null = pure $ A.Number 1
-applyOperation "var" [] A.Null = pure $ A.Number 1
-applyOperation "var" [A.Null] data_ = pure data_
-applyOperation "var" [] data_ = pure data_
-applyOperation "var" _ _ = throwM $ JsonLogicError ("Wrong number of arguments for var" :: String)
-applyOperation "sort" values data_ = sortValues values data_
-applyOperation "map" values data_ = mapIt values data_
-applyOperation "fold" [A.Object listDataVar, initial, A.Object operationObject] data_ = do
+applyOperation :: (MonadThrow m, MonadCatch m, MonadIO m) => Key -> [Value] -> Value -> Bool -> m Value
+applyOperation "var" [A.Number ind] (A.Array arr) _ = pure $ arr V.! (fromMaybe 0 $ toBoundedInteger ind :: Int)
+applyOperation "var" [A.String ind] (A.Array arr) _ = pure $ arr V.! (fromMaybe 0 $ readMaybe (DT.unpack ind) :: Int) -- TODO: make it like getVar to add support for nested arrays being access using 1.1.2
+applyOperation "var" [A.String ""] data_ _ = pure $ getVar data_ "" data_
+applyOperation "var" [A.String var] data_ _ = pure $ getVar data_ var A.Null
+applyOperation "var" [A.String var, value] data_ _ = pure $ getVar data_ var value
+applyOperation "var" [A.Null] A.Null _ = pure $ A.Number 1
+applyOperation "var" [] A.Null _ = pure $ A.Number 1
+applyOperation "var" [A.Null] data_ _ = pure data_
+applyOperation "var" [] data_ _ = pure data_
+applyOperation "var" _ _ _ = throwM $ JsonLogicError ("Wrong number of arguments for var" :: String)
+applyOperation "sort" values data_ eatTheKey = sortValues values data_ eatTheKey
+applyOperation "map" values data_ eatTheKey = mapIt values data_ eatTheKey
+applyOperation "on" [A.Object listDataVar, operationObject] data_ _ = do
+  case AKM.lookup (AK.fromString "var") listDataVar of
+    Just (A.String varFromData) -> do
+      updatedData <- jsonLogic operationObject (getVar data_ varFromData A.Null)
+      putVar varFromData updatedData data_
+    _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
+applyOperation "fold" [A.Object listDataVar, initial, A.Object operationObject] data_ eatTheKey = do
   case AKM.lookup (AK.fromString "var") listDataVar of
     Just (A.String varFromData) ->
       case getVar data_ varFromData A.Null of
@@ -129,46 +154,46 @@ applyOperation "fold" [A.Object listDataVar, initial, A.Object operationObject] 
                       )
                       initial
                       (listToFold <> V.fromList xs)
-                  putVar varFromData updatedData data_
+                  if eatTheKey then pure updatedData else putVar varFromData updatedData data_
                 _ -> throwM $ JsonLogicError ("wrong type of operands passed for folding" :: String)
             _ -> throwM $ JsonLogicError ("wrong type of operation or operands passed for folding" :: String)
         _ -> throwM $ JsonLogicError ("wrong type of variable passed for folding 1" :: String)
     _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
-applyOperation "filter" [A.Object var, operation] data_ = do
+applyOperation "filter" [A.Object var, operation] data_ eatTheKey = do
   case AKM.lookup (AK.fromString "var") var of
     Just (A.String varFromData) ->
       case getVar data_ varFromData A.Null of
         A.Array listToFilter -> do
           updatedData <- A.Array <$> V.filterM (fmap (not . toBool) . jsonLogic operation) listToFilter
-          putVar varFromData updatedData data_
+          if eatTheKey then pure updatedData else putVar varFromData updatedData data_
         _ -> throwM $ JsonLogicError ("wrong type of variable passed for filtering" :: String)
     _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
 -- applyOperation "missing" (A.Array args) data_ = List $ missing data_ args TODO: add these if required later
 -- applyOperation "missing_some" [Num minReq, List args] data_ = List $ missingSome data_ (round minReq) args
-applyOperation op args _ = do
+applyOperation op args _ _ = do
   case Map.lookup op operations of
     Just fn -> fn args
     Nothing -> pure A.Null
 
-mapIt :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> Value -> m Value
-mapIt [A.String mapOn, operation] data_ = mapIt' mapOn operation data_
-mapIt [A.Object mapOnVar, operation] data_ =
+mapIt :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> Value -> Bool -> m Value
+mapIt [A.String mapOn, operation] data_ eatTheKey = mapIt' mapOn operation data_ eatTheKey
+mapIt [A.Object mapOnVar, operation] data_ eatTheKey =
   case AKM.lookup (AK.fromString "var") mapOnVar of
-    Just (A.String varFromData) -> mapIt' varFromData operation data_
+    Just (A.String varFromData) -> mapIt' varFromData operation data_ eatTheKey
     _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
-mapIt _ _ = throwM $ JsonLogicError ("var must be specified here" :: String)
+mapIt _ _ _ = throwM $ JsonLogicError ("var must be specified here" :: String)
 
-mapIt' :: (MonadThrow m, MonadCatch m, MonadIO m) => DT.Text -> Value -> Value -> m Value
-mapIt' mapOn operation data_ =
+mapIt' :: (MonadThrow m, MonadCatch m, MonadIO m) => DT.Text -> Value -> Value -> Bool -> m Value
+mapIt' mapOn operation data_ eatTheKey =
   case getVar data_ mapOn A.Null of
     A.Array listToFilter -> do
       updatedData <- A.Array <$> liftIO (mapConcurrently (jsonLogic operation) listToFilter)
-      putVar mapOn updatedData data_
+      if eatTheKey then pure updatedData else putVar mapOn updatedData data_
     _ -> throwM $ JsonLogicError ("wrong type of variable passed for mapping" :: String)
 
-sortValues :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> Value -> m Value
-sortValues [] _ = throwM $ JsonLogicError ("wrong usage of sort command" :: String)
-sortValues (x : restValues) data_ = go x
+sortValues :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> Value -> Bool -> m Value
+sortValues [] _ _ = throwM $ JsonLogicError ("wrong usage of sort command" :: String)
+sortValues (x : restValues) data_ eatTheKey = go x
   where
     go (A.Object sortWhat) = do
       case AKM.lookup (AK.fromString "var") sortWhat of
@@ -176,14 +201,14 @@ sortValues (x : restValues) data_ = go x
           case getVar data_ varFromData A.Null of
             A.Array listToSort -> do
               updatedVar <- A.Array . V.fromList <$> sortValues' restValues (V.toList listToSort)
-              putVar varFromData updatedVar data_
+              if eatTheKey then pure updatedVar else putVar varFromData updatedVar data_
             _ -> throwM $ JsonLogicError ("wrong type of variable passed for sorting" :: String)
         _ -> throwM $ JsonLogicError ("wrong type of variable passed for sorting" :: String)
     go (A.String varFromData) = do
       case getVar data_ varFromData A.Null of
         A.Array listToSort -> do
           updatedVar <- A.Array . V.fromList <$> sortValues' restValues (V.toList listToSort)
-          putVar varFromData updatedVar data_
+          if eatTheKey then pure updatedVar else putVar varFromData updatedVar data_
         _ -> throwM $ JsonLogicError ("Wrong type of variable passed for sorting" :: String)
     go _ = throwM $ JsonLogicError ("cannot figureout what to sort broo" :: String)
 
