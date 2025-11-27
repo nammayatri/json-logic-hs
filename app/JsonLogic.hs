@@ -18,9 +18,10 @@ import Data.Foldable (foldlM)
 import Data.Int (Int64)
 import qualified Data.List as DL
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Scientific (toBoundedInteger, toRealFloat)
 import qualified Data.Text as DT
+import qualified Data.Text.Read as TR
 import qualified Data.Tuple.Extra as DTE
 import qualified Data.Vector as V
 import Debug.Trace (traceShowId)
@@ -36,12 +37,22 @@ instance Exception JsonLogicError
 
 _poolingTest :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
 _poolingTest = do
-  let tests = [AQ.aesonQQ|{ "substr": [ {"var": "drivers"}, 5 ] }|]
+  let tests = [AQ.aesonQQ|{ "drop": [ {"var": "drivers"}, 5 ] }|]
   let data_ = [AQ.aesonQQ|{ "drivers":  "POST_driverName" }|]
-  let tests2 = [AQ.aesonQQ|{ "substr": [ {"var": "drivers"}, 5 ] }|]
+
+  let tests2 = [AQ.aesonQQ|{ "drop": [ {"var": "drivers"}, 5 ] }|]
   let data2_ = [AQ.aesonQQ|{ "drivers":  [1, 2, 3, 4, 5, 6, 7] }|]
+
+  let tests3 = [AQ.aesonQQ|{ "min": [ {"var": "drivers"} ] }|]
+  let data3_ = [AQ.aesonQQ|{ "drivers":  [[[1, 2, 3, -4, 5, 6, 7] ,[1, 2, 3, 4, 5, 6, 7 ]], [1, -2, 3, 4, 5, 6, 10], [-1, 2, 3, 4, 5, 6, 11]] }|]
+
+  let tests4 = [AQ.aesonQQ|{ "map": [ {"var": "drivers"}, { "+" : [10, {"var": "A"}]} ] }|]
+  let data4_ = [AQ.aesonQQ|{ "drivers":  [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] }|]
+
   liftIO . print =<< jsonLogicEither tests data_
   liftIO . print =<< jsonLogicEither tests2 data2_
+  liftIO . print =<< jsonLogicEither tests3 data3_
+  liftIO . print =<< jsonLogicEither tests4 data4_
 
 _test :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
 _test = do
@@ -68,6 +79,7 @@ jsonLogic tests data_ =
     applyOperation' "filter" (A.Array values) = applyOperation "filter" (V.toList values) data_
     applyOperation' "sort" (A.Array values) = applyOperation "sort" (V.toList values) data_
     applyOperation' "map" (A.Array values) = applyOperation "map" (V.toList values) data_
+    applyOperation' "fold" (A.Array values) = applyOperation "fold" (V.toList values) data_
     applyOperation' "var" values = do
       resolvedValues <- jsonLogicValues values data_
       applyOperation "var" resolvedValues data_
@@ -93,6 +105,35 @@ applyOperation "var" [] data_ = pure data_
 applyOperation "var" _ _ = throwM $ JsonLogicError ("Wrong number of arguments for var" :: String)
 applyOperation "sort" values data_ = sortValues values data_
 applyOperation "map" values data_ = mapIt values data_
+applyOperation "fold" [A.Object listDataVar, initial, A.Object operationObject] data_ = do
+  case AKM.lookup (AK.fromString "var") listDataVar of
+    Just (A.String varFromData) ->
+      case getVar data_ varFromData A.Null of
+        A.Array (listToFold :: V.Vector Value) -> do
+          let operation = listToMaybe $ AKM.keys operationObject
+          let operands = listToMaybe $ AKM.elems operationObject
+          case (operation, operands) of
+            (Just operation', Just (A.Array operands')) -> do
+              case V.toList operands' of
+                (operands'' : xs) -> do
+                  updatedData <-
+                    V.foldM
+                      ( \acc x -> do
+                          case operands'' of
+                            A.Object varThing -> do
+                              case AKM.lookup (AK.fromString "var") varThing of
+                                Just (A.String varFromData') -> do
+                                  jsonLogic (A.Object (AKM.singleton operation' (A.toJSON [acc, getVar x varFromData' A.Null]))) A.Null
+                                _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
+                            _ -> throwM $ JsonLogicError ("wrong type of operands passed for folding" :: String)
+                      )
+                      initial
+                      (listToFold <> V.fromList xs)
+                  putVar varFromData updatedData data_
+                _ -> throwM $ JsonLogicError ("wrong type of operands passed for folding" :: String)
+            _ -> throwM $ JsonLogicError ("wrong type of operation or operands passed for folding" :: String)
+        _ -> throwM $ JsonLogicError ("wrong type of variable passed for folding 1" :: String)
+    _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
 applyOperation "filter" [A.Object var, operation] data_ = do
   case AKM.lookup (AK.fromString "var") var of
     Just (A.String varFromData) ->
@@ -163,8 +204,22 @@ sortValuesOn :: DT.Text -> [AKM.KeyMap Value] -> [AKM.KeyMap Value]
 sortValuesOn on = do
   DL.sortOn (\element -> getVar (A.Object element) on A.Null)
 
+parseInt :: DT.Text -> Either String Int
+parseInt t =
+  case TR.decimal t of
+    Right (n, leftover) | DT.null leftover -> Right n
+    _ -> Left "invalid int"
+
 getVar :: Value -> DT.Text -> Value -> Value
-getVar (A.Object dict) varName notFound = getVarHelper dict (DT.split (== '.') varName)
+getVar a "" _ = a
+getVar (A.Array arr) varName notFound = do
+  case parseInt varName of
+    Left _ -> notFound
+    Right index -> case V.indexM arr index of
+      Just res -> res
+      Nothing -> notFound
+getVar (A.Object dict) varName notFound = do
+  getVarHelper dict (DT.split (== '.') varName)
   where
     getVarHelper d [key] =
       case (AKM.lookup (AK.fromString $ DT.unpack key) d) of
@@ -172,7 +227,7 @@ getVar (A.Object dict) varName notFound = getVarHelper dict (DT.split (== '.') v
         Nothing -> notFound
     getVarHelper d (key : restKey) =
       case (AKM.lookup (AK.fromString $ DT.unpack key) d) of
-        Just (A.Object d') -> getVarHelper d' restKey
+        Just d' -> getVar d' (DT.intercalate "." restKey) notFound
         _ -> notFound
     getVarHelper _ _ = notFound
 getVar _ _ notFound = notFound
@@ -278,14 +333,41 @@ listOpJson fn acc = fmap A.toJSON . listOp fn acc
 
 operateNumberList :: (MonadThrow m, MonadCatch m, MonadIO m) => (Double -> Value -> m Double) -> (Double -> Double) -> [Value] -> m Value
 operateNumberList _ _ [] = pure A.Null
-operateNumberList _ onlyEntryAction [xs] = fmap (A.toJSON . onlyEntryAction) $ getNumber' xs
-operateNumberList fn _ (acc : xs) = do
-  accNumber <- getNumber' acc
-  fmap A.toJSON $ listOp fn accNumber xs
+operateNumberList fn onlyEntryAction ((A.Object varThing) : xs) = do
+  case AKM.lookup (AK.fromString "var") varThing of
+    Just (A.String varFromData) -> do
+      let numberValList = map (\x -> getVar x varFromData A.Null) xs
+      operateNumberList fn onlyEntryAction numberValList
+    _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
+operateNumberList fn onlyEntryAction [xs] = do
+  case xs of
+    A.Array xs' -> operateNumberList fn onlyEntryAction $ V.toList xs'
+    _ -> fmap (A.toJSON . onlyEntryAction) $ getNumber' xs
+operateNumberList fn onlyEntryAction (x : xs) = do
+  case x of
+    A.Array x' -> do
+      fstRes <- operateNumberList fn onlyEntryAction $ V.toList x'
+      restResults <- mapM (\xs' -> operateNumberList fn onlyEntryAction [xs']) xs
+      accNumber <- getNumber' fstRes
+      fmap A.toJSON $ listOp fn accNumber restResults
+    _ -> do
+      accNumber <- getNumber' x
+      fmap A.toJSON $ listOp fn accNumber xs
 
---
-listOp :: (MonadThrow m, MonadCatch m, MonadIO m) => (a -> Value -> m a) -> a -> [Value] -> m a
-listOp fn acc = foldlM fn acc
+listOp :: (MonadThrow m, MonadCatch m, MonadIO m, A.ToJSON a) => (a -> Value -> m a) -> a -> [Value] -> m a
+listOp _ acc [] = pure acc
+listOp fn acc ((A.Object varThing) : xs) = do
+  case AKM.lookup (AK.fromString "var") varThing of
+    Just (A.String varFromData) -> do
+      let listVal = map (\x -> getVar x varFromData A.Null) xs
+      listOp fn acc listVal
+    _ -> throwM $ JsonLogicError ("wrong type of variable passed for folding 2" :: String)
+listOp fn acc (x : xs) = do
+  case x of
+    A.Array xs' -> do
+      results <- mapM (\xs'' -> fmap A.toJSON $ listOp fn acc [xs'']) xs'
+      foldlM fn acc results
+    _ -> foldlM fn acc (x : xs)
 
 listOpWithOutAcc :: (MonadThrow m, MonadCatch m, MonadIO m) => (Value -> Value -> m Value) -> [Value] -> m Value
 listOpWithOutAcc fn vals = go vals
@@ -313,17 +395,23 @@ compareWithAll _ [] = pure False
 compareWithAll _ [_x] = pure False
 compareWithAll ordering xs = compareAll (compareJsonImpl ordering) xs
 
-substr :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
-substr stringToCut cutFrom = do
-  fromIndex <- round <$> getNumber' cutFrom
-  elementsFromIndex fromIndex stringToCut 
+data TrimOp = Take | Drop deriving (Show)
 
-elementsFromIndex :: (MonadThrow m, MonadCatch m, MonadIO m) => Int -> Value -> m Value
-elementsFromIndex n (String txt) = 
-    pure . String $ DT.drop n txt
-elementsFromIndex n (Array arr) = 
-    pure . Array $ V.drop n arr
-elementsFromIndex a b = throwM $ JsonLogicError ("wrong type of variable passed for substr " <> show (A.encode a) <> " " <> show (A.encode b) :: String)
+listTrimmingOperators :: (MonadThrow m, MonadCatch m, MonadIO m) => TrimOp -> Value -> Value -> m Value
+listTrimmingOperators trimOp arrToCut cutFrom = do
+  fromIndex <- round <$> getNumber' cutFrom
+  elementsFromIndex trimOp fromIndex arrToCut
+
+elementsFromIndex :: (MonadThrow m, MonadCatch m, MonadIO m) => TrimOp -> Int -> Value -> m Value
+elementsFromIndex trimOp n (String txt) =
+  pure $ case trimOp of
+    Drop -> String $ DT.drop n txt
+    Take -> String $ DT.take n txt
+elementsFromIndex trimOp n (Array arr) =
+  pure $ case trimOp of
+    Drop -> Array $ V.drop n arr
+    Take -> Array $ V.take n arr
+elementsFromIndex trimOp a b = throwM $ JsonLogicError ("wrong type of variable passed for substr " <> show (A.encode a) <> " " <> show (A.encode b) <> " op: " <> show trimOp :: String)
 
 operations :: (MonadThrow m, MonadCatch m, MonadIO m) => Map.Map Key ([Value] -> m Value)
 operations =
@@ -354,12 +442,16 @@ operations =
           ("log", unaryOp (pure . logValue)),
           ("cat", listOpWithOutAcc (\a -> pure . concatValue a)),
           ("+", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
+          ("sum", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
           ("*", listOpJson (operateNumber (\a -> pure . (*) a)) 1),
-          ("substr", binaryOpJson (\a b -> substr a b)),
+          ("substr", binaryOpJson (\a b -> listTrimmingOperators Drop a b)),
+          ("drop", binaryOpJson (\a b -> listTrimmingOperators Drop a b)),
+          ("take", binaryOpJson (\a b -> listTrimmingOperators Take a b)),
           ("min", operateNumberList (operateNumber (\a -> pure . min a)) id),
           ("max", operateNumberList (operateNumber (\a -> pure . max a)) id),
           ("merge", pure . merge),
           ("-", operateNumberList (operateNumber (\a -> pure . (-) a)) ((-1) *)),
+          ("diff", operateNumberList (operateNumber (\a -> pure . (-) a)) ((-1) *)),
           ("/", binaryOpJson (\a b -> liftM2 (/) (getNumber' a) (getNumber' b))),
           ("%", binaryOpJson modOperator)
         ]
