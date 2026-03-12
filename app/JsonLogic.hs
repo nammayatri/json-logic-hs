@@ -278,12 +278,14 @@ jsonLogicValues val data_ = do
   pure [res]
 
 compareJsonImpl :: Ordering -> Value -> Value -> Bool
-compareJsonImpl ordering a b = do
+compareJsonImpl EQ a b = a == b
+compareJsonImpl _ A.Null _ = False -- null is not orderable; comparisons involving null always return false
+compareJsonImpl _ _ A.Null = False
+compareJsonImpl ordering a b =
   ( case ordering of
-      EQ -> (==)
       LT -> (<)
       GT -> (>)
-    )
+  )
     a
     b
 
