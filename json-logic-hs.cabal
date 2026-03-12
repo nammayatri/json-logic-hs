@@ -93,6 +93,9 @@ executable json-logic-hs
       , scientific
       , text
       , exceptions
+      , async
+      , transformers
+      , transformers-either
     hs-source-dirs:   app
     ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -fhide-source-paths -Werror
     default-extensions:
