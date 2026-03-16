@@ -31,7 +31,7 @@ import Prelude
 newtype JsonLogicError = JsonLogicError
   { errorMessage :: String
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show)
 
 instance Exception JsonLogicError
 
@@ -422,7 +422,7 @@ compareWithAll _ [] = pure False
 compareWithAll _ [_x] = pure False
 compareWithAll ordering xs = compareAll (compareJsonImpl ordering) xs
 
-data TrimOp = Take | Drop deriving (Show)
+data TrimOp = Take | Drop deriving stock (Show)
 
 listTrimmingOperators :: MonadThrow m => TrimOp -> Value -> Value -> m Value
 listTrimmingOperators trimOp arrToCut cutFrom = do
