@@ -31,11 +31,11 @@ import Prelude
 newtype JsonLogicError = JsonLogicError
   { errorMessage :: String
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Show)
 
 instance Exception JsonLogicError
 
-_poolingTest :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
+_poolingTest :: (MonadCatch m, MonadIO m) => m ()
 _poolingTest = do
   let tests = [AQ.aesonQQ|{ "drop": [ {"var": "drivers"}, 5 ] }|]
   let data_ = [AQ.aesonQQ|{ "drivers":  "POST_driverName" }|]
@@ -70,7 +70,7 @@ _poolingTest = do
   liftIO . print . A.encode =<< jsonLogic tests7 data7_
   liftIO . print . A.encode =<< jsonLogic tests8 data8_
 
-_test :: (MonadThrow m, MonadCatch m, MonadIO m) => m ()
+_test :: (MonadCatch m, MonadIO m) => m ()
 _test = do
   let tests = [AQ.aesonQQ|{ "filter": [ { "var": "drivers" }, { "!=": [ { "var": "driverPoolResult.driverTags.SafetyCohort" }, "Unsafe" ] } ] }|]
   let data_ = [AQ.aesonQQ|{ "drivers": [{"driverPoolResult": { "driverTags": { "SafetyCohort": "Unsafe"}, "c": 1 } }, {"driverPoolResult": { "driverTags": { "SafetyCohort": "Safe"}, "c": 1 } }] }|]
@@ -81,7 +81,7 @@ jsonLogicEither logic data_ = runEitherT $ do
   result <- lift (jsonLogic logic data_) `catch` left
   right result
 
-jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
+jsonLogic :: (MonadCatch m, MonadIO m) => Value -> Value -> m Value
 jsonLogic tests data_ =
   case tests of
     A.Object dict ->
@@ -111,7 +111,7 @@ jsonLogic tests data_ =
           resolvedValues <- jsonLogic values data_
           pure $ A.object [operator .= resolvedValues]
 
-applyOperation :: (MonadThrow m, MonadCatch m, MonadIO m) => Key -> [Value] -> Value -> Bool -> m Value
+applyOperation :: (MonadCatch m, MonadIO m) => Key -> [Value] -> Value -> Bool -> m Value
 applyOperation "var" [A.Number ind] (A.Array arr) _ = pure $ arr V.! (fromMaybe 0 $ toBoundedInteger ind :: Int)
 applyOperation "var" [A.String ind] (A.Array arr) _ = pure $ arr V.! (fromMaybe 0 $ readMaybe (DT.unpack ind) :: Int) -- TODO: make it like getVar to add support for nested arrays being access using 1.1.2
 applyOperation "var" [A.String ""] data_ _ = pure $ getVar data_ "" data_
@@ -175,7 +175,7 @@ applyOperation op args _ _ = do
     Just fn -> fn args
     Nothing -> pure A.Null
 
-mapIt :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> Value -> Bool -> m Value
+mapIt :: (MonadThrow m, MonadIO m) => [Value] -> Value -> Bool -> m Value
 mapIt [A.String mapOn, operation] data_ eatTheKey = mapIt' mapOn operation data_ eatTheKey
 mapIt [A.Object mapOnVar, operation] data_ eatTheKey =
   case AKM.lookup (AK.fromString "var") mapOnVar of
@@ -183,7 +183,7 @@ mapIt [A.Object mapOnVar, operation] data_ eatTheKey =
     _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
 mapIt _ _ _ = throwM $ JsonLogicError ("var must be specified here" :: String)
 
-mapIt' :: (MonadThrow m, MonadCatch m, MonadIO m) => DT.Text -> Value -> Value -> Bool -> m Value
+mapIt' :: (MonadThrow m, MonadIO m) => DT.Text -> Value -> Value -> Bool -> m Value
 mapIt' mapOn operation data_ eatTheKey =
   case getVar data_ mapOn A.Null of
     A.Array listToFilter -> do
@@ -191,7 +191,7 @@ mapIt' mapOn operation data_ eatTheKey =
       if eatTheKey then pure updatedData else putVar mapOn updatedData data_
     _ -> throwM $ JsonLogicError ("wrong type of variable passed for mapping" :: String)
 
-sortValues :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> Value -> Bool -> m Value
+sortValues :: MonadThrow m => [Value] -> Value -> Bool -> m Value
 sortValues [] _ _ = throwM $ JsonLogicError ("wrong usage of sort command" :: String)
 sortValues (x : restValues) data_ eatTheKey = go x
   where
@@ -212,7 +212,7 @@ sortValues (x : restValues) data_ eatTheKey = go x
         _ -> throwM $ JsonLogicError ("Wrong type of variable passed for sorting" :: String)
     go _ = throwM $ JsonLogicError ("cannot figureout what to sort broo" :: String)
 
-sortValues' :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> [Value] -> m [Value]
+sortValues' :: MonadThrow m => [Value] -> [Value] -> m [Value]
 sortValues' [] listToSort = pure $ map A.Object . DL.sort $ mapMaybe getObjects listToSort
 sortValues' [A.String on] listToSort = pure $ map A.Object . sortValuesOn on $ mapMaybe getObjects listToSort
 sortValues' [A.Object on] listToSort = do
@@ -257,10 +257,10 @@ getVar (A.Object dict) varName notFound = do
     getVarHelper _ _ = notFound
 getVar _ _ notFound = notFound
 
-putVar :: (MonadThrow m, MonadCatch m, MonadIO m) => DT.Text -> Value -> Value -> m Value
+putVar :: MonadThrow m => DT.Text -> Value -> Value -> m Value
 putVar key newVal (A.Object obj) = fmap A.Object $ putVarHelper obj (DT.split (== '.') key) newVal
   where
-    putVarHelper :: (MonadThrow m, MonadCatch m, MonadIO m) => AKM.KeyMap Value -> [DT.Text] -> Value -> m (AKM.KeyMap Value)
+    putVarHelper :: MonadThrow m => AKM.KeyMap Value -> [DT.Text] -> Value -> m (AKM.KeyMap Value)
     putVarHelper d [finalKey] val = pure $ AKM.insert (AK.fromString $ DT.unpack finalKey) val d
     putVarHelper d (key' : restKey) val =
       case AKM.lookup (AK.fromString $ DT.unpack key') d of
@@ -271,7 +271,7 @@ putVar key newVal (A.Object obj) = fmap A.Object $ putVarHelper obj (DT.split (=
     putVarHelper _ _ _ = throwM $ JsonLogicError ("Invalid path for putting value" :: String)
 putVar _ _ _ = throwM $ JsonLogicError ("putVar expects an object as the target value" :: String)
 
-jsonLogicValues :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m [Value]
+jsonLogicValues :: (MonadCatch m, MonadIO m) => Value -> Value -> m [Value]
 jsonLogicValues (Array vals) data_ = mapM (`jsonLogic` data_) $ V.toList vals
 jsonLogicValues val data_ = do
   res <- jsonLogic val data_
@@ -298,7 +298,7 @@ toBool a = case a of
   A.Number aa -> aa == 0
   A.Object _ -> False
 
-modOperator :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Int64
+modOperator :: MonadThrow m => Value -> Value -> m Int64
 modOperator a b =
   case (a, b) of
     (A.Number aa, A.Number bb) -> do
@@ -309,37 +309,37 @@ modOperator a b =
         _ -> throwM $ JsonLogicError ("Couldn't parse numbers" :: String)
     _ -> throwM $ JsonLogicError ("Invalid input type for mod operator a: " <> show a <> ", b: " <> show b :: String)
 
-ifOp :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> m Value
+ifOp :: MonadThrow m => [Value] -> m Value
 ifOp [a, b, c] = pure $ if not (toBool a) then b else c
 ifOp [a, b] = pure $ if not (toBool a) then b else A.Null
 ifOp [a] = pure $ if not (toBool a) then a else A.Bool False
 ifOp [] = pure A.Null
 ifOp args = throwM $ JsonLogicError ("wrong number of args supplied, need 3 or less" <> show args :: String)
 
-unaryOp :: (MonadThrow m, MonadCatch m, MonadIO m) => (Value -> m a) -> [Value] -> m a
+unaryOp :: MonadThrow m => (Value -> m a) -> [Value] -> m a
 unaryOp fn [a] = fn a
 unaryOp _ _ = throwM $ JsonLogicError ("wrong number of args supplied, need 1" :: String)
 
 logValue :: Value -> Value
 logValue = traceShowId
 
-binaryOp :: forall m a. (MonadThrow m, MonadCatch m, MonadIO m) => (Value -> Value -> m a) -> [Value] -> m a
+binaryOp :: forall m a. MonadThrow m => (Value -> Value -> m a) -> [Value] -> m a
 binaryOp fn [a, b] = fn a b
 binaryOp _ _ = throwM $ JsonLogicError ("wrong number of args supplied, need 2" :: String)
 
-inOp :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Bool
+inOp :: MonadThrow m => Value -> Value -> m Bool
 inOp a bx = case (a, bx) of
   (a', A.Array bx') -> pure $ V.elem a' bx'
   (A.String a', A.String bx') -> pure $ a' `DT.isInfixOf` bx'
   _ -> throwM $ JsonLogicError ("failed to check if " <> show a <> " is in " <> show bx :: String)
 
-getNumber' :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> m Double
+getNumber' :: MonadThrow m => Value -> m Double
 getNumber' a = case a of
   A.Number aa -> pure $ toRealFloat aa
   _ -> throwM $ JsonLogicError ("expected number, got -> " <> show a :: String)
 
 --
-operateNumber :: (MonadThrow m, MonadCatch m, MonadIO m) => (Double -> Double -> m Double) -> Double -> Value -> m Double
+operateNumber :: MonadThrow m => (Double -> Double -> m Double) -> Double -> Value -> m Double
 operateNumber fn acc a = do
   a' <- getNumber' a
   acc `fn` a'
@@ -352,13 +352,13 @@ deepMerge (Object a) (Object b) = Object (AKM.unionWith deepMerge a b)
 deepMerge (Array a) (Array b) = Array (a <> b)
 deepMerge _ b = b
 
-binaryOpJson :: forall m a. (MonadThrow m, MonadCatch m, MonadIO m) => ToJSON a => (Value -> Value -> m a) -> [Value] -> m Value
+binaryOpJson :: forall m a. MonadThrow m => ToJSON a => (Value -> Value -> m a) -> [Value] -> m Value
 binaryOpJson fn = fmap A.toJSON . binaryOp fn
 
-listOpJson :: (MonadThrow m, MonadCatch m, MonadIO m) => ToJSON a => (a -> Value -> m a) -> a -> [Value] -> m Value
+listOpJson :: MonadThrow m => ToJSON a => (a -> Value -> m a) -> a -> [Value] -> m Value
 listOpJson fn acc = fmap A.toJSON . listOp fn acc
 
-operateNumberList :: (MonadThrow m, MonadCatch m, MonadIO m) => (Double -> Value -> m Double) -> (Double -> Double) -> [Value] -> m Value
+operateNumberList :: MonadThrow m => (Double -> Value -> m Double) -> (Double -> Double) -> [Value] -> m Value
 operateNumberList _ _ [] = pure A.Null
 operateNumberList fn onlyEntryAction ((A.Object varThing) : xs) = do
   case AKM.lookup (AK.fromString "var") varThing of
@@ -381,7 +381,7 @@ operateNumberList fn onlyEntryAction (x : xs) = do
       accNumber <- getNumber' x
       fmap A.toJSON $ listOp fn accNumber xs
 
-listOp :: (MonadThrow m, MonadCatch m, MonadIO m, A.ToJSON a) => (a -> Value -> m a) -> a -> [Value] -> m a
+listOp :: (MonadThrow m, A.ToJSON a) => (a -> Value -> m a) -> a -> [Value] -> m a
 listOp _ acc [] = pure acc
 listOp fn acc ((A.Object varThing) : xs) = do
   case AKM.lookup (AK.fromString "var") varThing of
@@ -396,7 +396,7 @@ listOp fn acc (x : xs) = do
       foldlM fn acc results
     _ -> foldlM fn acc (x : xs)
 
-listOpWithOutAcc :: (MonadThrow m, MonadCatch m, MonadIO m) => (Value -> Value -> m Value) -> [Value] -> m Value
+listOpWithOutAcc :: MonadThrow m => (Value -> Value -> m Value) -> [Value] -> m Value
 listOpWithOutAcc fn vals = go vals
   where
     go (A.Object _ : _) = listOp fn (A.Object AKM.empty) vals
@@ -409,27 +409,27 @@ merge = A.Array . V.fromList . concatMap getArr
       A.Array arr -> V.toList arr
       e -> [e]
 
-compareJson :: (MonadThrow m, MonadCatch m, MonadIO m) => Ordering -> [Value] -> m Bool
+compareJson :: MonadThrow m => Ordering -> [Value] -> m Bool
 compareJson ord values = binaryOp (\a -> pure . compareJsonImpl ord a) values
 
-compareAll :: (MonadThrow m, MonadCatch m, MonadIO m) => (Value -> Value -> Bool) -> [Value] -> m Bool
+compareAll :: MonadThrow m => (Value -> Value -> Bool) -> [Value] -> m Bool
 compareAll fn (x : y : xs) = liftM2 (&&) (pure $ fn x y) (compareAll fn (y : xs))
 compareAll _ (_x : _xs) = pure True
 compareAll _ _ = throwM $ JsonLogicError ("need atleast one element" :: String)
 
-compareWithAll :: (MonadThrow m, MonadCatch m, MonadIO m) => Ordering -> [Value] -> m Bool -- TODO: probably could be improved, but wanted to write this way 😊
+compareWithAll :: MonadThrow m => Ordering -> [Value] -> m Bool -- TODO: probably could be improved, but wanted to write this way 😊
 compareWithAll _ [] = pure False
 compareWithAll _ [_x] = pure False
 compareWithAll ordering xs = compareAll (compareJsonImpl ordering) xs
 
-data TrimOp = Take | Drop deriving (Show)
+data TrimOp = Take | Drop deriving stock (Show)
 
-listTrimmingOperators :: (MonadThrow m, MonadCatch m, MonadIO m) => TrimOp -> Value -> Value -> m Value
+listTrimmingOperators :: MonadThrow m => TrimOp -> Value -> Value -> m Value
 listTrimmingOperators trimOp arrToCut cutFrom = do
   fromIndex <- round <$> getNumber' cutFrom
   elementsFromIndex trimOp fromIndex arrToCut
 
-elementsFromIndex :: (MonadThrow m, MonadCatch m, MonadIO m) => TrimOp -> Int -> Value -> m Value
+elementsFromIndex :: MonadThrow m => TrimOp -> Int -> Value -> m Value
 elementsFromIndex trimOp n (String txt) =
   pure $ case trimOp of
     Drop -> String $ DT.drop n txt
@@ -440,7 +440,7 @@ elementsFromIndex trimOp n (Array arr) =
     Take -> Array $ V.take n arr
 elementsFromIndex trimOp a b = throwM $ JsonLogicError ("wrong type of variable passed for substr " <> show (A.encode a) <> " " <> show (A.encode b) <> " op: " <> show trimOp :: String)
 
-operations :: (MonadThrow m, MonadCatch m, MonadIO m) => Map.Map Key ([Value] -> m Value)
+operations :: MonadThrow m => Map.Map Key ([Value] -> m Value)
 operations =
   Map.fromList $
     -- all in below array are checker functions i.e. checks for conditions returns bool

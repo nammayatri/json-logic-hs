@@ -58,8 +58,9 @@ library
       StandaloneDeriving
       PackageImports
       TemplateHaskell
+      DerivingStrategies
     default-language: Haskell2010
-    ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -fhide-source-paths -Werror
+    ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -Wredundant-constraints -fhide-source-paths -Werror
     build-depends:
       base
       , containers
@@ -97,7 +98,7 @@ executable json-logic-hs
       , transformers
       , transformers-either
     hs-source-dirs:   app
-    ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -fhide-source-paths -Werror
+    ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -Wredundant-constraints -fhide-source-paths -Werror
     default-extensions:
       ConstraintKinds
       DataKinds
@@ -133,4 +134,5 @@ executable json-logic-hs
       StandaloneDeriving
       PackageImports
       TemplateHaskell
+      DerivingStrategies
     default-language: Haskell2010
