@@ -25,6 +25,7 @@ import qualified Data.Text.Read as TR
 import qualified Data.Tuple.Extra as DTE
 import qualified Data.Vector as V
 import Debug.Trace (traceShowId)
+import System.IO.Unsafe (unsafePerformIO)
 import Text.Read (readMaybe)
 import Prelude
 
@@ -61,9 +62,12 @@ _poolingTest = do
   let tests8 = [AQ.aesonQQ|{ "on": [ {"var": "drivers.a"}, { "fold'": [ {"var": "a"}, 0, { "+" : [{"var": "A"}]} ] }] }|]
   let data8_ = [AQ.aesonQQ|{ "drivers":  {"a": { "a": [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] } }}|]
 
-  liftIO . print =<< jsonLogicEither tests data_
-  liftIO . print =<< jsonLogicEither tests2 data2_
-  liftIO . print =<< jsonLogicEither tests3 data3_
+  res1 <- liftIO $ jsonLogicEitherIO tests data_
+  res2 <- liftIO $ jsonLogicEitherIO tests2 data2_
+  res3 <- liftIO $ jsonLogicEitherIO tests3 data3_
+  liftIO $ print res1
+  liftIO $ print res2
+  liftIO $ print res3
   liftIO . print . A.encode =<< jsonLogic tests4 data4_
   liftIO . print . A.encode =<< jsonLogic tests5 data5_
   liftIO . print . A.encode =<< jsonLogic tests6 data6_
@@ -76,8 +80,12 @@ _test = do
   let data_ = [AQ.aesonQQ|{ "drivers": [{"driverPoolResult": { "driverTags": { "SafetyCohort": "Unsafe"}, "c": 1 } }, {"driverPoolResult": { "driverTags": { "SafetyCohort": "Safe"}, "c": 1 } }] }|]
   liftIO . print . A.encode =<< jsonLogic tests data_
 
-jsonLogicEither :: (MonadCatch m, MonadIO m) => Value -> Value -> m (Either SomeException Value)
-jsonLogicEither logic data_ = runEitherT $ do
+jsonLogicEither :: Value -> Value -> Either SomeException Value
+jsonLogicEither logic data_ = unsafePerformIO (jsonLogicEitherIO logic data_)
+{-# NOINLINE jsonLogicEither #-}
+
+jsonLogicEitherIO :: Value -> Value -> IO (Either SomeException Value)
+jsonLogicEitherIO logic data_ = runEitherT $ do
   result <- lift (jsonLogic logic data_) `catch` left
   right result
 
@@ -85,11 +93,15 @@ jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Valu
 jsonLogic tests data_ =
   case tests of
     A.Object dict ->
-      let operator = AK.toString $ fst (head (AKM.toList dict))
-          values = snd (head (AKM.toList dict))
-          eatTheKey = DL.isSuffixOf "'" operator
-          operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
-       in applyOperation' operator' values eatTheKey
+      case AKM.toList dict of
+        [(opKey, values)] ->
+          let operator = AK.toString opKey
+              eatTheKey = DL.isSuffixOf "'" operator
+              operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
+           in applyOperation' operator' values eatTheKey
+        _ -> do
+          evaluated <- AKM.traverseWithKey (\_ v -> jsonLogic v data_) dict
+          pure $ A.Object evaluated
     A.Array rules -> A.Array <$> V.mapM (`jsonLogic` data_) rules
     _ -> pure tests
   where
