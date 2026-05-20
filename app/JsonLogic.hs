@@ -25,6 +25,7 @@ import qualified Data.Text.Read as TR
 import qualified Data.Tuple.Extra as DTE
 import qualified Data.Vector as V
 import Debug.Trace (traceShowId)
+import System.IO.Unsafe (unsafePerformIO)
 import Text.Read (readMaybe)
 import Prelude
 
@@ -61,9 +62,9 @@ _poolingTest = do
   let tests8 = [AQ.aesonQQ|{ "on": [ {"var": "drivers.a"}, { "fold'": [ {"var": "a"}, 0, { "+" : [{"var": "A"}]} ] }] }|]
   let data8_ = [AQ.aesonQQ|{ "drivers":  {"a": { "a": [ { "A": 1 }, { "A": 2 }, { "A": 3 } ] } }}|]
 
-  liftIO . print =<< jsonLogicEither tests data_
-  liftIO . print =<< jsonLogicEither tests2 data2_
-  liftIO . print =<< jsonLogicEither tests3 data3_
+  liftIO . print $ jsonLogicEither tests data_
+  liftIO . print $ jsonLogicEither tests2 data2_
+  liftIO . print $ jsonLogicEither tests3 data3_
   liftIO . print . A.encode =<< jsonLogic tests4 data4_
   liftIO . print . A.encode =<< jsonLogic tests5 data5_
   liftIO . print . A.encode =<< jsonLogic tests6 data6_
@@ -76,10 +77,14 @@ _test = do
   let data_ = [AQ.aesonQQ|{ "drivers": [{"driverPoolResult": { "driverTags": { "SafetyCohort": "Unsafe"}, "c": 1 } }, {"driverPoolResult": { "driverTags": { "SafetyCohort": "Safe"}, "c": 1 } }] }|]
   liftIO . print . A.encode =<< jsonLogic tests data_
 
-jsonLogicEither :: (MonadCatch m, MonadIO m) => Value -> Value -> m (Either SomeException Value)
-jsonLogicEither logic data_ = runEitherT $ do
+jsonLogicEitherIO :: (MonadCatch m, MonadIO m) => Value -> Value -> m (Either SomeException Value)
+jsonLogicEitherIO logic data_ = runEitherT $ do
   result <- lift (jsonLogic logic data_) `catch` left
   right result
+
+jsonLogicEither :: Value -> Value -> Either SomeException Value
+jsonLogicEither logic data_ = unsafePerformIO (jsonLogicEitherIO logic data_)
+{-# NOINLINE jsonLogicEither #-}
 
 jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
 jsonLogic tests data_ =
@@ -99,6 +104,7 @@ jsonLogic tests data_ =
     applyOperation' "map" (A.Array values) eatTheKey = applyOperation "map" (V.toList values) data_ eatTheKey
     applyOperation' "fold" (A.Array values) eatTheKey = applyOperation "fold" (V.toList values) data_ eatTheKey
     applyOperation' "on" (A.Array values) _ = applyOperation "on" (V.toList values) data_ False
+    applyOperation' "switch" (A.Array values) _ = applyOperation "switch" (V.toList values) data_ False
     applyOperation' "var" values eatTheKey = do
       resolvedValues <- jsonLogicValues values data_
       applyOperation "var" resolvedValues data_ eatTheKey
@@ -168,6 +174,17 @@ applyOperation "filter" [A.Object var, operation] data_ eatTheKey = do
           if eatTheKey then pure updatedData else putVar varFromData updatedData data_
         _ -> throwM $ JsonLogicError ("wrong type of variable passed for filtering" :: String)
     _ -> throwM $ JsonLogicError ("var must be specified here" :: String)
+applyOperation "switch" [keyExpr, casesObj, defaultVal] data_ _ = do
+  key <- jsonLogic keyExpr data_
+  case (key, casesObj) of
+    (A.String s, A.Object cases) ->
+      case AKM.lookup (AK.fromText s) cases of
+        Just matched -> jsonLogic matched data_
+        Nothing -> jsonLogic defaultVal data_
+    (_, A.Object _) -> jsonLogic defaultVal data_
+    _ -> throwM $ JsonLogicError ("switch: 2nd argument must be an object of cases" :: String)
+applyOperation "switch" [keyExpr, casesObj] data_ _ = applyOperation "switch" [keyExpr, casesObj, A.Null] data_ False
+applyOperation "switch" _ _ _ = throwM $ JsonLogicError ("switch: wrong number of arguments" :: String)
 -- applyOperation "missing" (A.Array args) data_ = List $ missing data_ args TODO: add these if required later
 -- applyOperation "missing_some" [Num minReq, List args] data_ = List $ missingSome data_ (round minReq) args
 applyOperation op args _ _ = do
@@ -316,6 +333,11 @@ ifOp [a] = pure $ if not (toBool a) then a else A.Bool False
 ifOp [] = pure A.Null
 ifOp args = throwM $ JsonLogicError ("wrong number of args supplied, need 3 or less" <> show args :: String)
 
+coalesceOp :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> m Value
+coalesceOp [] = pure A.Null
+coalesceOp (A.Null : rest) = coalesceOp rest
+coalesceOp (x : _) = pure x
+
 unaryOp :: (MonadThrow m, MonadCatch m, MonadIO m) => (Value -> m a) -> [Value] -> m a
 unaryOp fn [a] = fn a
 unaryOp _ _ = throwM $ JsonLogicError ("wrong number of args supplied, need 1" :: String)
@@ -388,7 +410,7 @@ listOp fn acc ((A.Object varThing) : xs) = do
     Just (A.String varFromData) -> do
       let listVal = map (\x -> getVar x varFromData A.Null) xs
       listOp fn acc listVal
-    _ -> throwM $ JsonLogicError ("wrong type of variable passed for folding 2" :: String)
+    _ -> foldlM fn acc (A.Object varThing : xs)
 listOp fn acc (x : xs) = do
   case x of
     A.Array xs' -> do
@@ -466,6 +488,7 @@ operations =
         (DTE.first AK.fromString)
         [ ("?:", ifOp),
           ("if", ifOp),
+          ("coalesce", coalesceOp),
           ("log", unaryOp (pure . logValue)),
           ("cat", listOpWithOutAcc (\a -> pure . concatValue a)),
           ("+", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
