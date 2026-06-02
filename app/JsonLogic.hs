@@ -90,11 +90,14 @@ jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Valu
 jsonLogic tests data_ =
   case tests of
     A.Object dict ->
-      let operator = AK.toString $ fst (head (AKM.toList dict))
-          values = snd (head (AKM.toList dict))
-          eatTheKey = DL.isSuffixOf "'" operator
-          operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
-       in applyOperation' operator' values eatTheKey
+      case AKM.toList dict of
+        [] -> pure A.Null
+        ((k, v) : _) ->
+          let operator = AK.toString k
+              values = v
+              eatTheKey = DL.isSuffixOf "'" operator
+              operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
+           in applyOperation' operator' values eatTheKey
     A.Array rules -> A.Array <$> V.mapM (`jsonLogic` data_) rules
     _ -> pure tests
   where
@@ -118,8 +121,10 @@ jsonLogic tests data_ =
           pure $ A.object [operator .= resolvedValues]
 
 applyOperation :: (MonadThrow m, MonadCatch m, MonadIO m) => Key -> [Value] -> Value -> Bool -> m Value
-applyOperation "var" [A.Number ind] (A.Array arr) _ = pure $ arr V.! (fromMaybe 0 $ toBoundedInteger ind :: Int)
-applyOperation "var" [A.String ind] (A.Array arr) _ = pure $ arr V.! (fromMaybe 0 $ readMaybe (DT.unpack ind) :: Int) -- TODO: make it like getVar to add support for nested arrays being access using 1.1.2
+applyOperation "var" [A.Number ind] (A.Array arr) _ =
+  pure $ fromMaybe A.Null $ arr V.!? (fromMaybe 0 $ toBoundedInteger ind :: Int)
+applyOperation "var" [A.String ind] (A.Array arr) _ =
+  pure $ fromMaybe A.Null $ arr V.!? (fromMaybe 0 $ readMaybe (DT.unpack ind) :: Int)
 applyOperation "var" [A.String ""] data_ _ = pure $ getVar data_ "" data_
 applyOperation "var" [A.String var] data_ _ = pure $ getVar data_ var A.Null
 applyOperation "var" [A.String var, value] data_ _ = pure $ getVar data_ var value
@@ -371,7 +376,8 @@ concatValue a b = deepMerge a b
 
 deepMerge :: Value -> Value -> Value
 deepMerge (Object a) (Object b) = Object (AKM.unionWith deepMerge a b)
-deepMerge (Array a) (Array b) = Array (a <> b)
+deepMerge (Array _) (Array b) = Array b
+deepMerge a Null = a
 deepMerge _ b = b
 
 binaryOpJson :: forall m a. (MonadThrow m, MonadCatch m, MonadIO m) => ToJSON a => (Value -> Value -> m a) -> [Value] -> m Value
