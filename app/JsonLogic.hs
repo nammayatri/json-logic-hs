@@ -376,7 +376,7 @@ concatValue a b = deepMerge a b
 
 deepMerge :: Value -> Value -> Value
 deepMerge (Object a) (Object b) = Object (AKM.unionWith deepMerge a b)
-deepMerge (Array _) (Array b) = Array b
+deepMerge (Array a) (Array b) = Array (a <> b)
 deepMerge a Null = a
 deepMerge _ b = b
 
