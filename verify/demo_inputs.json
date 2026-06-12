@@ -1,0 +1,12 @@
+[
+  {"actualQAR":0.15,"distanceInKm":1,"rainStatus":"no_rain","serviceTier":"TAXI"},
+  {"actualQAR":0.15,"distanceInKm":3,"rainStatus":"no_rain","serviceTier":"TAXI"},
+  {"actualQAR":0.45,"distanceInKm":3,"rainStatus":"no_rain","serviceTier":"TAXI"},
+  {"actualQAR":0.40,"distanceInKm":1,"rainStatus":"heavy_rain","serviceTier":"TAXI"},
+  {"actualQAR":0.62,"distanceInKm":1,"rainStatus":"heavy_rain","serviceTier":"TAXI"},
+  {"actualQAR":0.75,"distanceInKm":10,"rainStatus":"no_rain","serviceTier":"TAXI"},
+  {"actualQAR":0.10,"distanceInKm":5,"rainStatus":"light_rain","serviceTier":"AUTO_PLUS"},
+  {"actualQAR":0.30,"distanceInKm":12,"rainStatus":"no_data","serviceTier":"AUTO_PLUS"},
+  {"actualQAR":0.45,"distanceInKm":3,"rainStatus":"no_rain","serviceTier":"AUTO_RICKSHAW"},
+  {"actualQAR":0.55,"distanceInKm":8,"rainStatus":"no_rain","serviceTier":"ECO"}
+]

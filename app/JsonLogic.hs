@@ -5,7 +5,7 @@
 module JsonLogic where
 
 import Control.Concurrent.Async (mapConcurrently)
-import Control.Monad (liftM2)
+import Control.Monad (liftM2, unless, when)
 import Control.Monad.Catch
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class (lift)
@@ -85,6 +85,22 @@ jsonLogicEitherIO logic data_ = runEitherT $ do
 jsonLogicEither :: Value -> Value -> Either SomeException Value
 jsonLogicEither logic data_ = unsafePerformIO (jsonLogicEitherIO logic data_)
 {-# NOINLINE jsonLogicEither #-}
+
+-- | Fold the engine over a list of logic rules, threading the accumulated
+--   result forward. This mirrors the backend's
+--   @Lib.Yudhishthira.Tools.Utils.runLogics@: a rule that throws is recorded
+--   (tagged with its 0-based index) and evaluation continues from the previous
+--   accumulator. Returns the final accumulator and the collected errors so
+--   callers can present "value threaded through, but rule N failed" rather than
+--   silently dropping the error. Shared so the engine, tests and jl-verify can't
+--   drift apart on this semantics.
+runLogics :: [Value] -> Value -> (Value, [String])
+runLogics logics dat = go (0 :: Int) dat [] logics
+  where
+    go _ acc errs [] = (acc, reverse errs)
+    go i acc errs (l : ls) = case jsonLogicEither l acc of
+      Left e -> go (i + 1) acc (("rule " <> show i <> ": " <> show e) : errs) ls
+      Right r -> go (i + 1) r errs ls
 
 jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
 jsonLogic tests data_ =
@@ -468,6 +484,56 @@ elementsFromIndex trimOp n (Array arr) =
     Take -> Array $ V.take n arr
 elementsFromIndex trimOp a b = throwM $ JsonLogicError ("wrong type of variable passed for substr " <> show (A.encode a) <> " " <> show (A.encode b) <> " op: " <> show trimOp :: String)
 
+-- | bucket: given a value and a list of breakpoints, return the slab index =
+--   number of breakpoints <= value.  Half-open buckets [lo, hi):
+--     bucket(35, [30,40,45]) == 1   (the 30..40 slab)
+--     bucket(40, [30,40,45]) == 2   (40 belongs to 40..45)
+--   Used to index congestion-charge grids instead of nested if/else chains.
+--
+--   Pricing path: rather than silently return a wrong-but-plausible slab, every
+--   ill-formed input throws. Breakpoints must be non-empty, finite and strictly
+--   ascending; the value must be finite. (Non-ascending/empty/NaN/duplicates all
+--   otherwise collapse to slab 0 or shift the index.)
+bucketIndex :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Int
+bucketIndex val (A.Array breaks) = do
+  v <- getNumber' val
+  bs <- mapM getNumber' (V.toList breaks)
+  when (isNaN v || isInfinite v) $
+    throwM $ JsonLogicError ("bucket: value is not finite: " <> show v :: String)
+  when (null bs) $
+    throwM $ JsonLogicError ("bucket: empty breakpoint list" :: String)
+  when (any (\x -> isNaN x || isInfinite x) bs) $
+    throwM $ JsonLogicError ("bucket: non-finite breakpoint in " <> show bs :: String)
+  unless (and (zipWith (<) bs (drop 1 bs))) $
+    throwM $ JsonLogicError ("bucket: breakpoints must be strictly ascending, got " <> show bs :: String)
+  pure $ length (takeWhile (<= v) bs)
+bucketIndex _ breaks =
+  throwM $ JsonLogicError ("bucket expects [number, array of ascending breaks], got breaks=" <> show breaks :: String)
+
+bucketOp :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> m Value
+bucketOp = binaryOpJson bucketIndex
+
+-- | arrayAt: index into an array. No clamping — an out-of-range index throws,
+--   naming the index and length. For correctly sized grids the index is always
+--   in range (a half-open bucket over n breakpoints yields 0..n, and the grid
+--   has n+1 rows), so an out-of-range index means a malformed grid, which is
+--   exactly when we want to fail loud rather than silently reuse a neighbour row.
+arrayAtAt :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
+arrayAtAt (A.Array arr) idxV = do
+  d <- getNumber' idxV
+  when (isNaN d || isInfinite d) $
+    throwM $ JsonLogicError ("arrayAt: index is not finite: " <> show d :: String)
+  let i = floor d :: Int
+      n = V.length arr
+  case arr V.!? i of
+    Just x -> pure x
+    Nothing -> throwM $ JsonLogicError ("arrayAt: index " <> show i <> " out of range for array of length " <> show n :: String)
+arrayAtAt arr _ =
+  throwM $ JsonLogicError ("arrayAt expects [array, index], got array=" <> show arr :: String)
+
+arrayAtOp :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> m Value
+arrayAtOp = binaryOp arrayAtAt
+
 operations :: (MonadThrow m, MonadCatch m, MonadIO m) => Map.Map Key ([Value] -> m Value)
 operations =
   Map.fromList $
@@ -495,6 +561,8 @@ operations =
         [ ("?:", ifOp),
           ("if", ifOp),
           ("coalesce", coalesceOp),
+          ("bucket", bucketOp),
+          ("arrayAt", arrayAtOp),
           ("log", unaryOp (pure . logValue)),
           ("cat", listOpWithOutAcc (\a -> pure . concatValue a)),
           ("+", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
