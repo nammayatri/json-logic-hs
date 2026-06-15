@@ -21,8 +21,11 @@ maintainer:         piyush.kumar@juspay.in
 -- category:
 extra-source-files: CHANGELOG.md
 
-library
-    hs-source-dirs: app
+common warnings
+    default-language: Haskell2010
+    ghc-options: -Wall -Wcompat -Widentities -fhide-source-paths -Werror
+
+common extensions
     default-extensions:
       ConstraintKinds
       DataKinds
@@ -58,8 +61,8 @@ library
       StandaloneDeriving
       PackageImports
       TemplateHaskell
-    default-language: Haskell2010
-    ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -fhide-source-paths -Werror
+
+common engine-deps
     build-depends:
       base
       , containers
@@ -70,67 +73,42 @@ library
       , text
       , exceptions
       , async
-      , transformers-either
       , transformers
-    exposed-modules:
-      JsonLogic
+      , transformers-either
+
+library
+    import:           warnings, extensions, engine-deps
+    hs-source-dirs:   app
+    ghc-options:      -fwrite-ide-info -hiedir=.hie
+    exposed-modules:  JsonLogic
 
 executable json-logic-hs
+    import:           warnings, extensions, engine-deps
+    hs-source-dirs:   app
+    ghc-options:      -fwrite-ide-info -hiedir=.hie
     main-is:          Main.hs
+    other-modules:    JsonLogic
 
-    -- Modules included in this executable, other than Main.
-    other-modules:
-      JsonLogic
-
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
+test-suite json-logic-hs-test
+    import:           warnings, extensions
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Spec.hs
     build-depends:
       base
-      , containers
       , aeson
       , vector
-      , extra
       , scientific
-      , text
-      , exceptions
-      , async
-      , transformers
-      , transformers-either
-    hs-source-dirs:   app
-    ghc-options: -fwrite-ide-info -hiedir=.hie -Wall -Wcompat -Widentities -fhide-source-paths -Werror
-    default-extensions:
-      ConstraintKinds
-      DataKinds
-      DefaultSignatures
-      DeriveAnyClass
-      DeriveFunctor
-      DeriveGeneric
-      DuplicateRecordFields
-      ExplicitNamespaces
-      FlexibleContexts
-      FlexibleInstances
-      FunctionalDependencies
-      GADTs
-      LambdaCase
-      MultiParamTypeClasses
-      MultiWayIf
-      NamedFieldPuns
-      NoImplicitPrelude
-      OverloadedStrings
-      PatternSynonyms
-      PolyKinds
-      RankNTypes
-      RecordWildCards
-      ScopedTypeVariables
-      TupleSections
-      TypeApplications
-      TypeFamilies
-      TypeOperators
-      ViewPatterns
-      BlockArguments
-      TypeSynonymInstances
-      UndecidableInstances
-      StandaloneDeriving
-      PackageImports
-      TemplateHaskell
-    default-language: Haskell2010
+      , bytestring
+      , json-logic-hs
+
+executable jl-verify
+    import:           warnings, extensions
+    hs-source-dirs:   verify
+    main-is:          Verify.hs
+    build-depends:
+      base
+      , aeson
+      , bytestring
+      , vector
+      , json-logic-hs
