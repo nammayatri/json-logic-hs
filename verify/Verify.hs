@@ -1,8 +1,8 @@
 -- | Local equivalent of control-center's dynamic-logic "verify".
 --
---   It runs the SAME engine call the backend uses (JsonLogic.runLogics, which
---   mirrors Lib.Yudhishthira.Tools.Utils.runLogics), so the output is exactly
---   what /config/dynamic-logic would show for the same logic + data.
+--   It runs the rule fold JsonLogic.Runner.runLogics, which mirrors the backend's
+--   Lib.Yudhishthira.Tools.Utils.runLogics, so the output is exactly what
+--   /config/dynamic-logic would show for the same logic + data.
 --
 --   Usage:
 --     jl-verify <config.json> '<inputJSON>'
@@ -18,7 +18,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.List (isPrefixOf)
 import qualified Data.Vector as V
-import JsonLogic (runLogics)
+import JsonLogic.Runner (runLogics)
 import System.Environment (getArgs)
 import System.Exit (exitFailure)
 import Prelude
