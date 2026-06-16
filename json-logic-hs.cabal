@@ -80,7 +80,9 @@ library
     import:           warnings, extensions, engine-deps
     hs-source-dirs:   app
     ghc-options:      -fwrite-ide-info -hiedir=.hie
-    exposed-modules:  JsonLogic
+    exposed-modules:
+      JsonLogic
+      JsonLogic.Runner
 
 executable json-logic-hs
     import:           warnings, extensions, engine-deps

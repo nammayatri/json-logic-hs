@@ -6,7 +6,7 @@
 --     2. Full equivalence sweep proving the compact grid encoding of the
 --        congestion-charge config evaluates identically to the original
 --        nested-if/else encoding for every (qar, distance, rain, serviceTier)
---        input, under the real engine via the shared JsonLogic.runLogics.
+--        input, under the real engine via the shared JsonLogic.Runner.runLogics.
 --     3. Grid shape check: rows == distBreaks+1, cols == qarBreaks+1.
 module Main (main) where
 
@@ -18,7 +18,8 @@ import qualified Data.ByteString.Lazy as BL
 import Data.IORef
 import Data.Scientific (toRealFloat)
 import qualified Data.Vector as V
-import JsonLogic (jsonLogicEither, runLogics)
+import JsonLogic (jsonLogicEither)
+import JsonLogic.Runner (runLogics)
 import System.Exit (exitFailure)
 import Prelude
 
