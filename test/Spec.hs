@@ -87,6 +87,80 @@ main = do
   check "grid q=15 d=3 = 1.4" (at 15 3 `approxEq` num 1.4)
   check "grid q=40 d=1 = 1.0" (at 40 1 `approxEq` num 1.0)
 
+  putStrLn "== nested object / array data literals: ALL keys preserved =="
+  let multiKey = object ["a" .= num 1, "b" .= num 2, "c" .= num 3]
+  check "multi-key data object keeps all keys" (evalR multiKey Null `approxEq` multiKey)
+
+  let nestedObj = object ["wrapper" .= object ["x" .= num 1, "y" .= num 2, "z" .= num 3]]
+  check "nested multi-key object value preserved" (evalR nestedObj Null `approxEq` nestedObj)
+
+  let singleKey = object ["foo" .= num 1]
+  check "single-key data object unchanged" (evalR singleKey Null `approxEq` singleKey)
+
+  let nestedArr =
+        object
+          [ "arr" .= A.toJSON ([1, 2, 3] :: [Double]),
+            "grid" .= A.toJSON ([[1, 2], [3, 4]] :: [[Double]]),
+            "meta" .= object ["k" .= num 7, "v" .= num 8]
+          ]
+  check "nested arrays + object in data literal preserved" (evalR nestedArr Null `approxEq` nestedArr)
+
+  let evalField = object ["result" .= object ["+" .= A.toJSON ([1, 2] :: [Double])], "keep" .= num 9]
+      evalFieldExpected = object ["result" .= num 3, "keep" .= num 9]
+  check "operator expr inside data field is evaluated" (evalR evalField Null `approxEq` evalFieldExpected)
+
+  let varWhole = object ["var" .= ("obj" :: String)]
+      varData = object ["obj" .= object ["a" .= num 1, "b" .= num 2]]
+  check "var returns full multi-key object" (evalR varWhole varData `approxEq` object ["a" .= num 1, "b" .= num 2])
+
+  putStrLn "== generalized nesting: depth, arrays-of-objects, empty object =="
+  -- Deep (3-level) multi-key nesting: collapse must not lurk at any inner level.
+  let deep =
+        object
+          [ "l1a" .= num 1,
+            "l1b"
+              .= object
+                [ "l2a" .= num 2,
+                  "l2b" .= object ["l3a" .= num 3, "l3b" .= num 4, "l3c" .= num 5]
+                ]
+          ]
+  check "3-level multi-key nesting fully preserved" (evalR deep Null `approxEq` deep)
+
+  let arrOfObjs = A.toJSON [object ["a" .= num 1, "b" .= num 2], object ["c" .= num 3, "d" .= num 4]]
+  check "array of multi-key objects preserved" (evalR arrOfObjs Null `approxEq` arrOfObjs)
+
+  -- Multi-key object nested inside an object field that is itself an array.
+  let objArrObj = object ["rows" .= A.toJSON [object ["x" .= num 1, "y" .= num 2]], "n" .= num 1]
+  check "object -> array -> multi-key object preserved" (evalR objArrObj Null `approxEq` objArrObj)
+
+  check "empty object evaluates to Null" (evalR (object []) Null `approxEq` Null)
+
+  putStrLn "== documented ambiguity: data object whose FIRST key is an operator name =="
+  let ambiguous = object ["in" .= num 1, "zzz" .= num 2] -- keys sorted: "in" first
+  check "operator-named first key is (mis)read as operator [known caveat]" (evalR ambiguous Null `approxEq` Null)
+
+  putStrLn "== nested-object patch via cat/deepMerge (the version-26 regression) =="
+  let baseConfig =
+        object
+          [ "pickupStallMonitoringConfig"
+              .= object
+                ["badTickDebounce" .= num 2, "gracePeriodSec" .= num 120, "progressThresholdMeters" .= num 50, "tickIntervalSec" .= num 60]
+          ]
+      newInner =
+        object
+          ["badTickDebounce" .= num 2, "gracePeriodSec" .= num 120, "progressThresholdMeters" .= num 55, "tickIntervalSec" .= num 60]
+      patch =
+        object
+          [ "cat"
+              .= [ object ["var" .= ("" :: String)],
+                   object ["pickupStallMonitoringConfig" .= Null],
+                   object ["pickupStallMonitoringConfig" .= newInner]
+                 ]
+          ]
+      patched = evalR patch baseConfig
+      expected = object ["pickupStallMonitoringConfig" .= newInner]
+  check "nested-object patch applies (leaf 55, siblings preserved)" (patched `approxEq` expected)
+
   putStrLn "== equivalence sweep: v2 config (old if/else vs new bucket/arrayAt) =="
   equivalenceSweep failures "test/fixtures/congestion_old.json" "test/fixtures/congestion_new.json"
 
@@ -188,12 +262,12 @@ gridShapeErrors val = case val of
           V.length innerArgs == 2,
           Array grid <- innerArgs V.! 0,
           Just nDist <- breaksLen (innerArgs V.! 1) ->
-            let rows = V.length grid
-                rowErr = ["grid has " <> show rows <> " rows, expected distBreaks+1 = " <> show (nDist + 1) | rows /= nDist + 1]
-                colErrs =
-                  [ "grid row " <> show i <> " has " <> show (V.length r) <> " cols, expected qarBreaks+1 = " <> show (nQar + 1)
-                    | (i, Array r) <- zip [0 :: Int ..] (V.toList grid),
-                      V.length r /= nQar + 1
-                  ]
-             in rowErr <> colErrs
+          let rows = V.length grid
+              rowErr = ["grid has " <> show rows <> " rows, expected distBreaks+1 = " <> show (nDist + 1) | rows /= nDist + 1]
+              colErrs =
+                [ "grid row " <> show i <> " has " <> show (V.length r) <> " cols, expected qarBreaks+1 = " <> show (nQar + 1)
+                  | (i, Array r) <- zip [0 :: Int ..] (V.toList grid),
+                    V.length r /= nQar + 1
+                ]
+           in rowErr <> colErrs
       _ -> []

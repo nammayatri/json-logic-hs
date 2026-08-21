@@ -97,10 +97,14 @@ jsonLogic tests data_ =
               values = v
               eatTheKey = DL.isSuffixOf "'" operator
               operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
-           in applyOperation' operator' values eatTheKey
+           in if isOperatorKey operator'
+                then applyOperation' operator' values eatTheKey
+                else A.Object <$> traverse (`jsonLogic` data_) dict
     A.Array rules -> A.Array <$> V.mapM (`jsonLogic` data_) rules
     _ -> pure tests
   where
+    specialOperations = ["filter", "sort", "map", "fold", "on", "switch", "var"] :: [Key]
+    isOperatorKey op = op `elem` specialOperations || isLogicOperation op
     isLogicOperation op = op `elem` Map.keys (operations :: Map.Map Key ([Value] -> IO Value))
     applyOperation' "filter" (A.Array values) eatTheKey = applyOperation "filter" (V.toList values) data_ eatTheKey
     applyOperation' "sort" (A.Array values) eatTheKey = applyOperation "sort" (V.toList values) data_ eatTheKey
