@@ -384,6 +384,17 @@ deepMerge (Array a) (Array b) = Array (a <> b)
 deepMerge a Null = a
 deepMerge _ b = b
 
+-- | Like 'deepMerge', but arrays are REPLACED (last value wins) instead of
+-- concatenated. Objects still merge key-wise (recursing with the same
+-- replace semantics, so nested arrays replace too) and @Null@ is still a
+-- no-op. Backs the "replaceMerge" operator; 'deepMerge'/"cat" is left
+-- untouched so every existing consumer keeps concat behaviour.
+deepMergeReplace :: Value -> Value -> Value
+deepMergeReplace (Object a) (Object b) = Object (AKM.unionWith deepMergeReplace a b)
+deepMergeReplace (Array _) (Array b) = Array b
+deepMergeReplace a Null = a
+deepMergeReplace _ b = b
+
 binaryOpJson :: forall m a. (MonadThrow m, MonadCatch m, MonadIO m) => ToJSON a => (Value -> Value -> m a) -> [Value] -> m Value
 binaryOpJson fn = fmap A.toJSON . binaryOp fn
 
@@ -553,6 +564,7 @@ operations =
           ("arrayAt", arrayAtOp),
           ("log", unaryOp (pure . logValue)),
           ("cat", listOpWithOutAcc (\a -> pure . concatValue a)),
+          ("replaceMerge", listOpWithOutAcc (\a -> pure . deepMergeReplace a)),
           ("+", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
           ("sum", listOpJson (operateNumber (\a -> pure . (+) a)) 0),
           ("*", listOpJson (operateNumber (\a -> pure . (*) a)) 1),
