@@ -20,6 +20,7 @@ import qualified Data.List as DL
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Scientific (toBoundedInteger, toRealFloat)
+import qualified Data.Set as Set
 import qualified Data.Text as DT
 import qualified Data.Text.Read as TR
 import qualified Data.Tuple.Extra as DTE
@@ -86,26 +87,41 @@ jsonLogicEither :: Value -> Value -> Either SomeException Value
 jsonLogicEither logic data_ = unsafePerformIO (jsonLogicEitherIO logic data_)
 {-# NOINLINE jsonLogicEither #-}
 
+-- 'operations' is polymorphic in its monad, so it compiles to a dictionary taking fx instead of a CAF
+-- (basically the set was being recomputed for every object node in the lists.)
+operationKeys :: Set.Set Key
+operationKeys = Map.keysSet (operations :: Map.Map Key ([Value] -> IO Value))
+
+specialOperationKeys :: Set.Set Key
+specialOperationKeys = Set.fromList ["filter", "sort", "map", "fold", "on", "switch", "var"]
+
+isLogicOperation :: Key -> Bool
+isLogicOperation op = op `Set.member` operationKeys
+
+isOperatorKey :: Key -> Bool
+isOperatorKey op = op `Set.member` specialOperationKeys || isLogicOperation op
+
 jsonLogic :: (MonadThrow m, MonadCatch m, MonadIO m) => Value -> Value -> m Value
 jsonLogic tests data_ =
   case tests of
     A.Object dict ->
       case AKM.toList dict of
         [] -> pure A.Null
-        ((k, v) : _) ->
+        ((k, v) : rest) ->
           let operator = AK.toString k
               values = v
               eatTheKey = DL.isSuffixOf "'" operator
               operator' = AK.fromString $ if eatTheKey then DT.unpack $ DT.replace "'" "" (DT.pack operator) else operator
            in if isOperatorKey operator'
                 then applyOperation' operator' values eatTheKey
-                else A.Object <$> traverse (`jsonLogic` data_) dict
+                else case rest of
+                  -- Single-key objects are the majority of the plain objects in the rule tree
+                  -- and rebuilding directly skips KeyMap's generic traverse-and-rebuild.
+                  [] -> A.Object . AKM.singleton k <$> jsonLogic v data_
+                  _ -> A.Object <$> traverse (`jsonLogic` data_) dict
     A.Array rules -> A.Array <$> V.mapM (`jsonLogic` data_) rules
     _ -> pure tests
   where
-    specialOperations = ["filter", "sort", "map", "fold", "on", "switch", "var"] :: [Key]
-    isOperatorKey op = op `elem` specialOperations || isLogicOperation op
-    isLogicOperation op = op `elem` Map.keys (operations :: Map.Map Key ([Value] -> IO Value))
     applyOperation' "filter" (A.Array values) eatTheKey = applyOperation "filter" (V.toList values) data_ eatTheKey
     applyOperation' "sort" (A.Array values) eatTheKey = applyOperation "sort" (V.toList values) data_ eatTheKey
     applyOperation' "map" (A.Array values) eatTheKey = applyOperation "map" (V.toList values) data_ eatTheKey
