@@ -80,6 +80,7 @@ common engine-deps
       , async
       , transformers
       , transformers-either
+      , time
 
 library
     import:           warnings, extensions, engine-deps

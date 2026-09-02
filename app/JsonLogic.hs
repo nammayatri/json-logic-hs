@@ -4,6 +4,7 @@
 
 module JsonLogic where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (liftM2, unless, when)
 import Control.Monad.Catch
@@ -23,6 +24,9 @@ import Data.Scientific (toBoundedInteger, toRealFloat)
 import qualified Data.Set as Set
 import qualified Data.Text as DT
 import qualified Data.Text.Read as TR
+import Data.Time.Calendar (Day, diffDays)
+import Data.Time.Clock (UTCTime (utctDay), getCurrentTime)
+import Data.Time.Format (defaultTimeLocale, formatTime, parseTimeM)
 import qualified Data.Tuple.Extra as DTE
 import qualified Data.Vector as V
 import Debug.Trace (traceShowId)
@@ -549,6 +553,27 @@ arrayAtAt arr _ =
 arrayAtOp :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> m Value
 arrayAtOp = binaryOp arrayAtAt
 
+currentDate :: MonadIO m => m Value
+currentDate = liftIO $ A.String . DT.pack . formatTime defaultTimeLocale "%Y-%m-%d" <$> getCurrentTime
+
+currentTimeOfDay :: MonadIO m => m Value
+currentTimeOfDay = liftIO $ A.String . DT.pack . formatTime defaultTimeLocale "%H:%M:%S" <$> getCurrentTime
+
+parseDay :: MonadThrow m => Value -> m Day
+parseDay (A.String t) = maybe unparseable pure (asDate <|> asTimestamp)
+  where
+    s = DT.unpack t
+    asDate = parseTimeM True defaultTimeLocale "%Y-%m-%d" s
+    asTimestamp = utctDay <$> parseTimeM True defaultTimeLocale "%Y-%m-%dT%H:%M:%S%Q%Z" s
+    unparseable = throwM $ JsonLogicError ("expected YYYY-MM-DD or an ISO-8601 timestamp, got -> " <> s :: String)
+parseDay v = throwM $ JsonLogicError ("expected a date string, got -> " <> show v :: String)
+
+dateDiff :: (MonadThrow m, MonadCatch m, MonadIO m) => [Value] -> m Value
+dateDiff = binaryOp $ \a b -> do
+  a' <- parseDay a
+  b' <- parseDay b
+  pure . A.Number . fromInteger $ diffDays a' b'
+
 operations :: (MonadThrow m, MonadCatch m, MonadIO m) => Map.Map Key ([Value] -> m Value)
 operations =
   Map.fromList $
@@ -593,5 +618,8 @@ operations =
           ("-", operateNumberList (operateNumber (\a -> pure . (-) a)) ((-1) *)),
           ("diff", operateNumberList (operateNumber (\a -> pure . (-) a)) ((-1) *)),
           ("/", binaryOpJson (\a b -> liftM2 (/) (getNumber' a) (getNumber' b))),
-          ("%", binaryOpJson modOperator)
+          ("%", binaryOpJson modOperator),
+          ("today", const currentDate),
+          ("currentTime", const currentTimeOfDay),
+          ("dateDiff", dateDiff)
         ]
